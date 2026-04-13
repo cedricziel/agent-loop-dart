@@ -1,8 +1,10 @@
 import 'agent_types.dart';
 
-abstract interface class AgentModel {
+abstract interface class AgentProvider {
   Future<AgentResponse> respond(AgentTurn turn);
 }
+
+abstract interface class AgentModel implements AgentProvider {}
 
 class LoopbackModel implements AgentModel {
   const LoopbackModel();

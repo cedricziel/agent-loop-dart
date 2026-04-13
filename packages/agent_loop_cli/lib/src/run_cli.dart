@@ -66,7 +66,27 @@ Future<int> runCli(List<String> args) async {
     systemPrompt: 'You are a compact coding agent.',
   );
 
-  final result = await sdk.run(prompt: args.join(' '));
-  stdout.writeln(result.output);
+  AgentRunResult? result;
+
+  await for (final event in sdk.stream(prompt: args.join(' '))) {
+    switch (event) {
+      case AgentAssistantEvent(message: final message)
+          when message.toolCall != null:
+        stderr.writeln('assistant: ${message.content}');
+      case AgentToolCallEvent(call: final call):
+        stderr.writeln('tool:start ${call.name}');
+      case AgentToolResultEvent(result: final toolResult):
+        stderr.writeln(
+          'tool:result ${toolResult.name} => ${toolResult.output}',
+        );
+      case AgentRunCompleteEvent(result: final completedResult):
+        result = completedResult;
+      case AgentAssistantEvent():
+        // Keep normal assistant text on stdout via the final result only.
+        break;
+    }
+  }
+
+  stdout.writeln(result?.output ?? '');
   return 0;
 }
