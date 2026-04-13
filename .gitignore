@@ -1,0 +1,15 @@
+# Dart and Flutter tooling
+.dart_tool/
+.packages
+pubspec.lock
+
+# Build and coverage outputs
+build/
+coverage/
+
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store

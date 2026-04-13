@@ -1,0 +1,13 @@
+name: agent_loop_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+workspace:
+  - packages/agent_loop_core
+  - packages/agent_loop
+  - packages/agent_loop_cli
+
+dev_dependencies:
+  lints: ^6.0.0

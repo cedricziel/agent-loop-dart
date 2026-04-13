@@ -1,0 +1,16 @@
+name: agent_loop
+description: Public SDK facade for building agent-loop applications in Dart.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+resolution: workspace
+
+dependencies:
+  agent_loop_core:
+    path: ../agent_loop_core
+
+dev_dependencies:
+  lints: ^6.0.0

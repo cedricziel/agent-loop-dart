@@ -1,0 +1,12 @@
+name: agent_loop_core
+description: Core agent loop abstractions and orchestration primitives.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+resolution: workspace
+
+dev_dependencies:
+  lints: ^6.0.0

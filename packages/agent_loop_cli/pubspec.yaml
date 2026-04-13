@@ -1,0 +1,16 @@
+name: agent_loop_cli
+description: CLI entrypoint for the agent-loop Dart workspace.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+resolution: workspace
+
+dependencies:
+  agent_loop:
+    path: ../agent_loop
+
+dev_dependencies:
+  lints: ^6.0.0
