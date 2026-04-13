@@ -3,6 +3,25 @@ import 'package:agent_loop_cli/src/run_cli.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('createManagedDemoSession', () {
+    test(
+      'creates and reloads a managed session through the SDK surface',
+      () async {
+        final sdk = AgentLoopSdk(
+          model: const LoopbackModel(),
+          store: InMemoryAgentSessionStore(),
+          sessionIdGenerator: () => 'session-1',
+          runIdGenerator: () => 'run-1',
+        );
+
+        final session = await createManagedDemoSession(sdk);
+
+        expect(session.id, 'session-1');
+        expect(session.transcript, isEmpty);
+      },
+    );
+  });
+
   group('formatPartForLog', () {
     test('renders reasoning, file, and tool parts for stderr logs', () {
       expect(

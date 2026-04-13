@@ -153,11 +153,29 @@ class AgentTurn {
 }
 
 class AgentSession {
-  AgentSession({required List<AgentMessage> transcript})
+  AgentSession({this.id, this.parentId, required List<AgentMessage> transcript})
     : transcript = List.unmodifiable(transcript);
 
+  final String? id;
+  final String? parentId;
   final List<AgentMessage> transcript;
+
+  AgentSession copyWith({
+    String? id,
+    Object? parentId = _agentSessionNoValue,
+    List<AgentMessage>? transcript,
+  }) {
+    return AgentSession(
+      id: id ?? this.id,
+      parentId: identical(parentId, _agentSessionNoValue)
+          ? this.parentId
+          : parentId as String?,
+      transcript: transcript ?? this.transcript,
+    );
+  }
 }
+
+const Object _agentSessionNoValue = Object();
 
 class AgentProviderException implements Exception {
   const AgentProviderException({
@@ -176,36 +194,67 @@ class AgentProviderException implements Exception {
 }
 
 sealed class AgentRunEvent {
-  const AgentRunEvent();
+  const AgentRunEvent({this.sessionId, this.runId});
+
+  final String? sessionId;
+  final String? runId;
 }
 
 class AgentAssistantEvent extends AgentRunEvent {
-  const AgentAssistantEvent({required this.message});
+  const AgentAssistantEvent({
+    required this.message,
+    super.sessionId,
+    super.runId,
+  });
 
   final AgentMessage message;
 }
 
 class AgentMessagePartEvent extends AgentRunEvent {
-  const AgentMessagePartEvent({required this.message, required this.part});
+  const AgentMessagePartEvent({
+    required this.message,
+    required this.part,
+    super.sessionId,
+    super.runId,
+  });
 
   final AgentMessage message;
   final MessagePart part;
 }
 
 class AgentToolCallEvent extends AgentRunEvent {
-  const AgentToolCallEvent({required this.call});
+  const AgentToolCallEvent({required this.call, super.sessionId, super.runId});
 
   final ToolCall call;
 }
 
 class AgentToolResultEvent extends AgentRunEvent {
-  const AgentToolResultEvent({required this.result});
+  const AgentToolResultEvent({
+    required this.result,
+    super.sessionId,
+    super.runId,
+  });
 
   final ToolResult result;
 }
 
 class AgentRunCompleteEvent extends AgentRunEvent {
-  const AgentRunCompleteEvent({required this.result});
+  const AgentRunCompleteEvent({
+    required this.result,
+    super.sessionId,
+    super.runId,
+  });
 
   final AgentRunResult result;
+}
+
+class AgentRunStartEvent extends AgentRunEvent {
+  const AgentRunStartEvent({required super.sessionId, required super.runId});
+}
+
+class AgentRunCancelledEvent extends AgentRunEvent {
+  const AgentRunCancelledEvent({
+    required super.sessionId,
+    required super.runId,
+  });
 }

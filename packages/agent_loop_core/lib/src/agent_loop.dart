@@ -1,4 +1,5 @@
 import 'agent_model.dart';
+import 'agent_run_control.dart';
 import 'agent_tool.dart';
 import 'agent_types.dart';
 
@@ -25,6 +26,7 @@ class AgentLoop {
     String prompt, {
     AgentSession? session,
     List<AgentMessage> transcript = const <AgentMessage>[],
+    AgentRunController? runController,
   }) async {
     AgentRunResult? result;
 
@@ -32,20 +34,29 @@ class AgentLoop {
       prompt,
       session: session,
       transcript: transcript,
+      runController: runController,
     )) {
       if (event is AgentRunCompleteEvent) {
         result = event.result;
       }
     }
 
-    return result ??
-        (throw StateError('Agent loop completed without a final result.'));
+    if (result != null) {
+      return result;
+    }
+
+    if (runController?.isCancelled ?? false) {
+      throw const AgentRunCancelledException();
+    }
+
+    throw StateError('Agent loop completed without a final result.');
   }
 
   Stream<AgentRunEvent> stream(
     String prompt, {
     AgentSession? session,
     List<AgentMessage> transcript = const <AgentMessage>[],
+    AgentRunController? runController,
   }) async* {
     final workingTranscript = <AgentMessage>[
       ...?session?.transcript,
@@ -64,7 +75,11 @@ class AgentLoop {
     workingTranscript.add(AgentMessage(role: AgentRole.user, content: prompt));
 
     for (var step = 1; step <= maxSteps; step++) {
-      final response = await _respond(workingTranscript);
+      _throwIfCancelled(runController);
+      final response = await _withCancellation(
+        _respond(workingTranscript),
+        runController,
+      );
 
       if (response.toolCalls.isEmpty) {
         final message = AgentMessage(
@@ -102,6 +117,7 @@ class AgentLoop {
       }
 
       for (final toolCall in response.toolCalls) {
+        _throwIfCancelled(runController);
         final assistantMessage = AgentMessage(
           role: AgentRole.assistant,
           content: 'Calling tool `${toolCall.name}`',
@@ -125,7 +141,10 @@ class AgentLoop {
         final tool = _tools[toolCall.name];
         final output = tool == null
             ? 'Tool `${toolCall.name}` is not registered.'
-            : await tool.execute(toolCall.input);
+            : await _withCancellation(
+                tool.execute(toolCall.input),
+                runController,
+              );
 
         final toolResult = ToolResult(
           callId: toolCall.id,
@@ -176,6 +195,28 @@ class AgentLoop {
         cause: error,
         stackTrace: stackTrace,
       );
+    }
+  }
+
+  Future<T> _withCancellation<T>(
+    Future<T> future,
+    AgentRunController? runController,
+  ) async {
+    if (runController == null) {
+      return future;
+    }
+
+    return Future.any(<Future<T>>[
+      future,
+      runController.onCancel.then<T>(
+        (_) => throw const AgentRunCancelledException(),
+      ),
+    ]);
+  }
+
+  void _throwIfCancelled(AgentRunController? runController) {
+    if (runController?.isCancelled ?? false) {
+      throw const AgentRunCancelledException();
     }
   }
 }

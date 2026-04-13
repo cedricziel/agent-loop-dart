@@ -85,6 +85,11 @@ String? formatPartForLog(MessagePart part) => switch (part) {
   TextPart() => null,
 };
 
+Future<ManagedAgentSession> createManagedDemoSession(AgentLoopSdk sdk) async {
+  final session = await sdk.createSession();
+  return sdk.loadSession(session.id);
+}
+
 Future<int> runCli(List<String> args) async {
   if (args.isEmpty) {
     stderr.writeln(
@@ -98,11 +103,15 @@ Future<int> runCli(List<String> args) async {
     tools: <AgentTool>[ClockTool()],
     systemPrompt: 'You are a compact coding agent.',
   );
+  final session = await createManagedDemoSession(sdk);
 
   AgentRunResult? result;
 
-  await for (final event in sdk.stream(prompt: args.join(' '))) {
+  await for (final event in session.stream(args.join(' '))) {
     switch (event) {
+      case AgentRunStartEvent():
+        // Managed sessions add explicit run lifecycle metadata.
+        break;
       case AgentMessagePartEvent(part: final part):
         final line = formatPartForLog(part);
         if (line != null && line.isNotEmpty) {
@@ -119,6 +128,8 @@ Future<int> runCli(List<String> args) async {
         break;
       case AgentRunCompleteEvent(result: final completedResult):
         result = completedResult;
+      case AgentRunCancelledEvent():
+        stderr.writeln('run:cancelled');
       case AgentAssistantEvent():
         // Keep normal assistant text on stdout via the final result only.
         break;
