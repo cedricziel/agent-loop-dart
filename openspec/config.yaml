@@ -8,7 +8,7 @@ context: |
   Tech stack: Pure dart
   We use conventional commits
   We follow the effective dart style guide
-  We use TDD for all our development
+  We use TDD for all our development and write tests before implementation
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
