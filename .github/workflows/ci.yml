@@ -25,6 +25,9 @@ jobs:
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed .
 
+      - name: Run tests
+        run: dart test
+
       - name: Analyze workspace
         run: dart analyze
 
