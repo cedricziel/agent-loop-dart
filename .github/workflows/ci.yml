@@ -25,8 +25,15 @@ jobs:
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed .
 
-      - name: Run tests
-        run: dart test
+      - name: Run workspace tests
+        run: |
+          for package in packages/agent_loop_core packages/agent_loop packages/agent_loop_cli; do
+            echo "Running tests in $package"
+            (
+              cd "$package"
+              dart test
+            )
+          done
 
       - name: Analyze workspace
         run: dart analyze
