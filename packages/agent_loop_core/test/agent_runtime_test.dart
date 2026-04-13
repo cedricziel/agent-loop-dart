@@ -1,0 +1,431 @@
+import 'dart:async';
+
+import 'package:agent_loop_core/agent_loop_core.dart';
+import 'package:test/test.dart';
+
+void main() {
+  group('AgentRuntime profiles', () {
+    test('registers visible and hidden agent profiles', () async {
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: <AgentProfile>[
+          const AgentProfile(id: 'primary', systemPrompt: 'Primary prompt'),
+          const AgentProfile(
+            id: 'researcher',
+            systemPrompt: 'Research prompt',
+            visibility: AgentProfileVisibility.hidden,
+            mode: AgentProfileMode.subagent,
+          ),
+        ],
+      );
+
+      expect(runtime.profile('primary')?.systemPrompt, 'Primary prompt');
+      expect(runtime.visibleProfiles.map((profile) => profile.id), <String>[
+        'primary',
+      ]);
+    });
+
+    test('runs a managed session with the selected profile metadata', () async {
+      final provider = _CapturingProvider();
+      final runtime = AgentRuntime(
+        provider: provider,
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'primary',
+            systemPrompt: 'Primary prompt',
+            maxSteps: 3,
+          ),
+        ],
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'primary');
+      await session.run('hello');
+
+      expect(session.profileId, 'primary');
+      expect(provider.lastSystemPrompt, 'Primary prompt');
+      expect(provider.callCount, 1);
+    });
+  });
+
+  group('AgentRuntime permissions', () {
+    test('denies tool calls before execution', () async {
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'locked-down',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.deny,
+              },
+            ),
+          ),
+        ],
+      );
+
+      final session = await runtime.createSession(profileId: 'locked-down');
+
+      await expectLater(
+        session.run('what time is it?'),
+        throwsA(isA<AgentPermissionDeniedException>()),
+      );
+    });
+
+    test('surfaces approval-required tool calls', () async {
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+      );
+
+      final session = await runtime.createSession(profileId: 'approval');
+
+      await expectLater(
+        session.run('what time is it?'),
+        throwsA(isA<AgentApprovalRequiredException>()),
+      );
+    });
+
+    test(
+      'emits permission events without fabricating tool transcript activity',
+      () async {
+        final runtime = AgentRuntime(
+          provider: _ToolCallingProvider(),
+          tools: <AgentTool>[const _ClockTool()],
+          profiles: const <AgentProfile>[
+            AgentProfile(
+              id: 'locked-down',
+              permissionPolicy: DeclarativeAgentPermissionPolicy(
+                toolPermissions: <String, AgentPermissionOutcome>{
+                  'clock': AgentPermissionOutcome.deny,
+                },
+              ),
+            ),
+          ],
+        );
+
+        final session = await runtime.createSession(profileId: 'locked-down');
+        final events = await session.stream('what time is it?').toList();
+
+        expect(events.whereType<AgentPermissionEvent>(), hasLength(1));
+        expect(events.whereType<AgentToolCallEvent>(), isEmpty);
+        expect(events.whereType<AgentToolResultEvent>(), isEmpty);
+        expect(events.last, isA<AgentPermissionEvent>());
+        expect(
+          session.transcript.map((message) => message.role),
+          <AgentRole>[],
+        );
+      },
+    );
+  });
+
+  group('AgentRuntime subagent hierarchy', () {
+    test('delegates work into a child session and can list children', () async {
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(id: 'primary'),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+        sessionIdGenerator: _IdSequence(<String>[
+          'session-1',
+          'session-2',
+        ]).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final parent = await runtime.createSession(profileId: 'primary');
+      final child = await parent.delegate('researcher', 'hello');
+      final children = await parent.children();
+
+      expect(child.id, 'session-2');
+      expect(child.parentId, 'session-1');
+      expect(child.profileId, 'researcher');
+      expect(child.delegatingAgentId, 'primary');
+      expect(children.map((session) => session.id), <String>['session-2']);
+      expect(child.transcript.map((message) => message.content), <String>[
+        'hello',
+        'hello',
+      ]);
+    });
+
+    test('denies subagent delegation by policy', () async {
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'primary',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              subagentPermissions: <String, AgentPermissionOutcome>{
+                'researcher': AgentPermissionOutcome.deny,
+              },
+            ),
+          ),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+      );
+
+      final parent = await runtime.createSession(profileId: 'primary');
+
+      await expectLater(
+        parent.delegate('researcher', 'hello'),
+        throwsA(isA<AgentPermissionDeniedException>()),
+      );
+    });
+
+    test('surfaces approval-required subagent delegation', () async {
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'primary',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              subagentPermissions: <String, AgentPermissionOutcome>{
+                'researcher': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+      );
+
+      final parent = await runtime.createSession(profileId: 'primary');
+
+      await expectLater(
+        parent.delegate('researcher', 'hello'),
+        throwsA(isA<AgentApprovalRequiredException>()),
+      );
+    });
+  });
+
+  group('AgentRuntime hooks', () {
+    test('observes permission evaluation outcomes', () async {
+      final hook = _RecordingRuntimeHook();
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        hooks: <AgentRuntimeHook>[hook],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'locked-down',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.deny,
+              },
+            ),
+          ),
+        ],
+      );
+
+      final session = await runtime.createSession(profileId: 'locked-down');
+
+      await expectLater(
+        session.run('what time is it?'),
+        throwsA(isA<AgentPermissionDeniedException>()),
+      );
+
+      expect(hook.permissionSubjects, <String>['clock']);
+    });
+
+    test('observes delegation lifecycle without bypassing policy', () async {
+      final hook = _RecordingRuntimeHook();
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        hooks: <AgentRuntimeHook>[hook],
+        profiles: const <AgentProfile>[
+          AgentProfile(id: 'primary'),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+        sessionIdGenerator: _IdSequence(<String>[
+          'session-1',
+          'session-2',
+        ]).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final parent = await runtime.createSession(profileId: 'primary');
+      await parent.delegate('researcher', 'hello');
+
+      expect(hook.delegationPhases, <String>['start', 'complete']);
+    });
+  });
+
+  group('AgentRuntime run control and events', () {
+    test(
+      'treats parent and child sessions as separate concurrency scopes',
+      () async {
+        final provider = _BlockingProvider();
+        final runtime = AgentRuntime(
+          provider: provider,
+          profiles: const <AgentProfile>[
+            AgentProfile(id: 'primary'),
+            AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+          ],
+          sessionIdGenerator: _IdSequence(<String>[
+            'session-1',
+            'session-2',
+          ]).next,
+          runIdGenerator: _IdSequence(<String>['run-1', 'run-2', 'run-3']).next,
+        );
+
+        final parent = await runtime.createSession(profileId: 'primary');
+        final childFuture = parent.delegate('researcher', 'seed');
+
+        await Future<void>.delayed(Duration.zero);
+        provider.completeNext(AgentResponse(text: 'seed done'));
+
+        final child = await childFuture;
+
+        final parentRun = parent.run('parent work');
+        final childRun = child.run('child work');
+        final childCancellation = expectLater(
+          childRun,
+          throwsA(isA<AgentRunCancelledException>()),
+        );
+
+        await Future<void>.delayed(Duration.zero);
+
+        await expectLater(
+          () => parent.run('another parent run'),
+          throwsA(isA<AgentSessionRunActiveException>()),
+        );
+
+        expect(await child.abort(), isTrue);
+        await childCancellation;
+
+        provider.completeNext(AgentResponse(text: 'parent done'));
+        await parentRun;
+      },
+    );
+
+    test('emits agent selection and delegation boundary events', () async {
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(id: 'primary'),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+        sessionIdGenerator: _IdSequence(<String>[
+          'session-1',
+          'session-2',
+        ]).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final parent = await runtime.createSession(profileId: 'primary');
+      final events = await parent
+          .delegateStream('researcher', 'hello')
+          .toList();
+
+      expect(events.first, isA<AgentDelegationEvent>());
+      expect(
+        (events.first as AgentDelegationEvent).phase,
+        AgentDelegationPhase.start,
+      );
+      expect(
+        events.whereType<AgentRunStartEvent>().single.agentId,
+        'researcher',
+      );
+      expect(events.last, isA<AgentDelegationEvent>());
+      expect(
+        (events.last as AgentDelegationEvent).phase,
+        AgentDelegationPhase.complete,
+      );
+    });
+  });
+}
+
+class _ToolCallingProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    return AgentResponse(
+      toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+    );
+  }
+}
+
+class _ClockTool implements AgentTool {
+  const _ClockTool();
+
+  @override
+  ToolDefinition get definition =>
+      const ToolDefinition(name: 'clock', description: 'Returns the time.');
+
+  @override
+  Future<String> execute(Map<String, Object?> input) async => '12:00';
+}
+
+class _CapturingProvider implements AgentProvider {
+  String? lastSystemPrompt;
+  int callCount = 0;
+
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    callCount++;
+    final systemMessages = turn.messages.where(
+      (message) => message.role == AgentRole.system,
+    );
+    final system = systemMessages.isEmpty ? null : systemMessages.first;
+    lastSystemPrompt = system?.content;
+    return AgentResponse(text: turn.messages.last.content);
+  }
+}
+
+class _IdSequence {
+  _IdSequence(this._ids);
+
+  final List<String> _ids;
+  var _index = 0;
+
+  String next() => _ids[_index++];
+}
+
+class _RecordingRuntimeHook implements AgentRuntimeHook {
+  final List<String> permissionSubjects = <String>[];
+  final List<String> delegationPhases = <String>[];
+
+  @override
+  Future<void> onDelegation(AgentDelegationHookEvent event) async {
+    delegationPhases.add(event.phase.name);
+  }
+
+  @override
+  Future<void> onPermissionEvaluated(
+    AgentPermissionDecision decision,
+    ManagedAgentSession session,
+  ) async {
+    permissionSubjects.add(decision.subject);
+  }
+}
+
+class _BlockingProvider implements AgentProvider {
+  final List<Completer<AgentResponse>> _responses =
+      <Completer<AgentResponse>>[];
+
+  void completeNext(AgentResponse response) {
+    if (_responses.isEmpty) {
+      throw StateError('No pending response to complete.');
+    }
+
+    _responses.removeAt(0).complete(response);
+  }
+
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) {
+    final completer = Completer<AgentResponse>();
+    _responses.add(completer);
+    return completer.future;
+  }
+}

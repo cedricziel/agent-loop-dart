@@ -1,7 +1,11 @@
 import 'agent_model.dart';
+import 'agent_permissions.dart';
 import 'agent_run_control.dart';
 import 'agent_tool.dart';
 import 'agent_types.dart';
+
+typedef ToolPermissionCheck =
+    Future<AgentPermissionDecision> Function(ToolCall toolCall);
 
 class AgentLoop {
   AgentLoop({
@@ -10,6 +14,7 @@ class AgentLoop {
     Iterable<AgentTool> tools = const <AgentTool>[],
     this.systemPrompt,
     this.maxSteps = 8,
+    this.toolPermissionCheck,
   }) : assert(
          provider != null || model != null,
          'Provide either an AgentProvider or an AgentModel.',
@@ -21,6 +26,7 @@ class AgentLoop {
   final ToolRegistry _tools;
   final String? systemPrompt;
   final int maxSteps;
+  final ToolPermissionCheck? toolPermissionCheck;
 
   Future<AgentRunResult> run(
     String prompt, {
@@ -118,6 +124,20 @@ class AgentLoop {
 
       for (final toolCall in response.toolCalls) {
         _throwIfCancelled(runController);
+
+        final decision = await toolPermissionCheck?.call(toolCall);
+        if (decision != null) {
+          yield AgentPermissionEvent(decision: decision);
+          switch (decision.outcome) {
+            case AgentPermissionOutcome.allow:
+              break;
+            case AgentPermissionOutcome.ask:
+              throw AgentApprovalRequiredException(decision);
+            case AgentPermissionOutcome.deny:
+              throw AgentPermissionDeniedException(decision);
+          }
+        }
+
         final assistantMessage = AgentMessage(
           role: AgentRole.assistant,
           content: 'Calling tool `${toolCall.name}`',

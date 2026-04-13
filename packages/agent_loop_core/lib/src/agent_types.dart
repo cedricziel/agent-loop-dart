@@ -1,3 +1,4 @@
+import 'agent_permissions.dart';
 import 'agent_tool.dart';
 
 enum AgentRole { system, user, assistant, tool }
@@ -153,16 +154,25 @@ class AgentTurn {
 }
 
 class AgentSession {
-  AgentSession({this.id, this.parentId, required List<AgentMessage> transcript})
-    : transcript = List.unmodifiable(transcript);
+  AgentSession({
+    this.id,
+    this.parentId,
+    this.profileId,
+    this.delegatingAgentId,
+    required List<AgentMessage> transcript,
+  }) : transcript = List.unmodifiable(transcript);
 
   final String? id;
   final String? parentId;
+  final String? profileId;
+  final String? delegatingAgentId;
   final List<AgentMessage> transcript;
 
   AgentSession copyWith({
     String? id,
     Object? parentId = _agentSessionNoValue,
+    Object? profileId = _agentSessionNoValue,
+    Object? delegatingAgentId = _agentSessionNoValue,
     List<AgentMessage>? transcript,
   }) {
     return AgentSession(
@@ -170,6 +180,12 @@ class AgentSession {
       parentId: identical(parentId, _agentSessionNoValue)
           ? this.parentId
           : parentId as String?,
+      profileId: identical(profileId, _agentSessionNoValue)
+          ? this.profileId
+          : profileId as String?,
+      delegatingAgentId: identical(delegatingAgentId, _agentSessionNoValue)
+          ? this.delegatingAgentId
+          : delegatingAgentId as String?,
       transcript: transcript ?? this.transcript,
     );
   }
@@ -194,10 +210,11 @@ class AgentProviderException implements Exception {
 }
 
 sealed class AgentRunEvent {
-  const AgentRunEvent({this.sessionId, this.runId});
+  const AgentRunEvent({this.sessionId, this.runId, this.agentId});
 
   final String? sessionId;
   final String? runId;
+  final String? agentId;
 }
 
 class AgentAssistantEvent extends AgentRunEvent {
@@ -205,6 +222,7 @@ class AgentAssistantEvent extends AgentRunEvent {
     required this.message,
     super.sessionId,
     super.runId,
+    super.agentId,
   });
 
   final AgentMessage message;
@@ -216,6 +234,7 @@ class AgentMessagePartEvent extends AgentRunEvent {
     required this.part,
     super.sessionId,
     super.runId,
+    super.agentId,
   });
 
   final AgentMessage message;
@@ -223,7 +242,12 @@ class AgentMessagePartEvent extends AgentRunEvent {
 }
 
 class AgentToolCallEvent extends AgentRunEvent {
-  const AgentToolCallEvent({required this.call, super.sessionId, super.runId});
+  const AgentToolCallEvent({
+    required this.call,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
 
   final ToolCall call;
 }
@@ -233,6 +257,7 @@ class AgentToolResultEvent extends AgentRunEvent {
     required this.result,
     super.sessionId,
     super.runId,
+    super.agentId,
   });
 
   final ToolResult result;
@@ -243,18 +268,54 @@ class AgentRunCompleteEvent extends AgentRunEvent {
     required this.result,
     super.sessionId,
     super.runId,
+    super.agentId,
   });
 
   final AgentRunResult result;
 }
 
 class AgentRunStartEvent extends AgentRunEvent {
-  const AgentRunStartEvent({required super.sessionId, required super.runId});
+  const AgentRunStartEvent({
+    required super.sessionId,
+    required super.runId,
+    super.agentId,
+  });
 }
 
 class AgentRunCancelledEvent extends AgentRunEvent {
   const AgentRunCancelledEvent({
     required super.sessionId,
     required super.runId,
+    super.agentId,
   });
+}
+
+class AgentPermissionEvent extends AgentRunEvent {
+  const AgentPermissionEvent({
+    required this.decision,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentPermissionDecision decision;
+}
+
+enum AgentDelegationPhase { start, complete }
+
+class AgentDelegationEvent extends AgentRunEvent {
+  const AgentDelegationEvent({
+    required this.phase,
+    required this.parentSessionId,
+    required this.childSessionId,
+    required this.delegatedAgentId,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentDelegationPhase phase;
+  final String parentSessionId;
+  final String childSessionId;
+  final String delegatedAgentId;
 }

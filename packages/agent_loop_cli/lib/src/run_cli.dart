@@ -85,8 +85,27 @@ String? formatPartForLog(MessagePart part) => switch (part) {
   TextPart() => null,
 };
 
+AgentLoopSdk createDemoSdk() {
+  return AgentLoopSdk(
+    model: const DemoModel(),
+    tools: <AgentTool>[ClockTool()],
+    systemPrompt: 'You are a compact coding agent.',
+    profiles: const <AgentProfile>[
+      AgentProfile(
+        id: 'primary',
+        systemPrompt: 'You are a compact coding agent.',
+      ),
+      AgentProfile(
+        id: 'researcher',
+        systemPrompt: 'You are a research specialist.',
+        mode: AgentProfileMode.subagent,
+      ),
+    ],
+  );
+}
+
 Future<ManagedAgentSession> createManagedDemoSession(AgentLoopSdk sdk) async {
-  final session = await sdk.createSession();
+  final session = await sdk.createSession(profileId: 'primary');
   return sdk.loadSession(session.id);
 }
 
@@ -98,20 +117,35 @@ Future<int> runCli(List<String> args) async {
     return 64;
   }
 
-  final sdk = AgentLoopSdk(
-    model: const DemoModel(),
-    tools: <AgentTool>[ClockTool()],
-    systemPrompt: 'You are a compact coding agent.',
-  );
+  final sdk = createDemoSdk();
   final session = await createManagedDemoSession(sdk);
 
   AgentRunResult? result;
 
-  await for (final event in session.stream(args.join(' '))) {
+  final prompt = args.join(' ');
+  final events = prompt.toLowerCase().contains('research')
+      ? session.delegateStream('researcher', prompt)
+      : session.stream(prompt);
+
+  await for (final event in events) {
     switch (event) {
+      case AgentDelegationEvent(
+        phase: AgentDelegationPhase.start,
+        delegatedAgentId: final delegatedAgentId,
+      ):
+        stderr.writeln('delegation:start $delegatedAgentId');
+      case AgentDelegationEvent(
+        phase: AgentDelegationPhase.complete,
+        delegatedAgentId: final delegatedAgentId,
+      ):
+        stderr.writeln('delegation:complete $delegatedAgentId');
       case AgentRunStartEvent():
         // Managed sessions add explicit run lifecycle metadata.
         break;
+      case AgentPermissionEvent(decision: final decision):
+        stderr.writeln(
+          'permission:${decision.outcome.name} ${decision.kind.name} ${decision.subject}',
+        );
       case AgentMessagePartEvent(part: final part):
         final line = formatPartForLog(part);
         if (line != null && line.isNotEmpty) {

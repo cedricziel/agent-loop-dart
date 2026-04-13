@@ -3,6 +3,17 @@ import 'package:agent_loop_cli/src/run_cli.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('createDemoSdk', () {
+    test('configures named demo agents', () {
+      final sdk = createDemoSdk();
+
+      expect(sdk.visibleProfiles.map((profile) => profile.id), <String>[
+        'primary',
+        'researcher',
+      ]);
+    });
+  });
+
   group('createManagedDemoSession', () {
     test(
       'creates and reloads a managed session through the SDK surface',

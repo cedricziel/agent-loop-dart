@@ -1,6 +1,8 @@
 export 'src/agent_loop.dart';
 export 'src/agent_model.dart';
+export 'src/agent_permissions.dart';
 export 'src/agent_run_control.dart';
+export 'src/agent_runtime.dart';
 export 'src/agent_session_manager.dart';
 export 'src/agent_tool.dart';
 export 'src/agent_types.dart';

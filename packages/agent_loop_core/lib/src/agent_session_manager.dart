@@ -1,4 +1,5 @@
 import 'agent_loop.dart';
+import 'agent_permissions.dart';
 import 'agent_run_control.dart';
 import 'agent_types.dart';
 
@@ -6,6 +7,8 @@ abstract interface class AgentSessionStore {
   Future<void> save(AgentSession session);
 
   Future<AgentSession?> load(String id);
+
+  Future<List<AgentSession>> listByParent(String parentId);
 }
 
 class InMemoryAgentSessionStore implements AgentSessionStore {
@@ -15,6 +18,13 @@ class InMemoryAgentSessionStore implements AgentSessionStore {
 
   @override
   Future<AgentSession?> load(String id) async => _sessions[id];
+
+  @override
+  Future<List<AgentSession>> listByParent(String parentId) async {
+    return _sessions.values
+        .where((session) => session.parentId == parentId)
+        .toList(growable: false);
+  }
 
   @override
   Future<void> save(AgentSession session) async {
@@ -29,28 +39,71 @@ class InMemoryAgentSessionStore implements AgentSessionStore {
 
 class AgentSessionManager {
   AgentSessionManager({
-    required AgentLoop loop,
+    AgentLoop? loop,
+    AgentLoop Function(AgentSession session)? loopFactory,
+    Future<ManagedAgentSession> Function(
+      ManagedAgentSession session,
+      String profileId,
+      String prompt,
+    )?
+    delegateHandler,
+    Stream<AgentRunEvent> Function(
+      ManagedAgentSession session,
+      String profileId,
+      String prompt,
+    )?
+    delegateStreamHandler,
     AgentSessionStore? store,
     String Function()? sessionIdGenerator,
     String Function()? runIdGenerator,
-  }) : _loop = loop,
+  }) : assert(loop != null || loopFactory != null),
+       _loop = loop,
+       _loopFactory =
+           loopFactory ??
+           ((AgentSession session) =>
+               loop ?? (throw StateError('Missing loop instance.'))),
+       _delegateHandler = delegateHandler,
+       _delegateStreamHandler = delegateStreamHandler,
        _store = store ?? InMemoryAgentSessionStore(),
        _sessionIdGenerator = sessionIdGenerator ?? _defaultSessionId,
        _runIdGenerator = runIdGenerator ?? _defaultRunId;
 
-  final AgentLoop _loop;
+  final AgentLoop? _loop;
+  final AgentLoop Function(AgentSession session) _loopFactory;
+  final Future<ManagedAgentSession> Function(
+    ManagedAgentSession session,
+    String profileId,
+    String prompt,
+  )?
+  _delegateHandler;
+  final Stream<AgentRunEvent> Function(
+    ManagedAgentSession session,
+    String profileId,
+    String prompt,
+  )?
+  _delegateStreamHandler;
   final AgentSessionStore _store;
   final String Function() _sessionIdGenerator;
   final String Function() _runIdGenerator;
 
-  Future<ManagedAgentSession> createSession() async {
+  Future<ManagedAgentSession> createSession({
+    String? profileId,
+    String? parentId,
+    String? delegatingAgentId,
+  }) async {
     final session = AgentSession(
       id: _sessionIdGenerator(),
+      parentId: parentId,
+      profileId: profileId,
+      delegatingAgentId: delegatingAgentId,
       transcript: const <AgentMessage>[],
     );
     await _store.save(session);
     return ManagedAgentSession._(
       loop: _loop,
+      loopFactory: _loopFactory,
+      delegateHandler: _delegateHandler,
+      delegateStreamHandler: _delegateStreamHandler,
       store: _store,
       session: session,
       sessionIdGenerator: _sessionIdGenerator,
@@ -66,6 +119,9 @@ class AgentSessionManager {
 
     return ManagedAgentSession._(
       loop: _loop,
+      loopFactory: _loopFactory,
+      delegateHandler: _delegateHandler,
+      delegateStreamHandler: _delegateStreamHandler,
       store: _store,
       session: session,
       sessionIdGenerator: _sessionIdGenerator,
@@ -76,18 +132,47 @@ class AgentSessionManager {
 
 class ManagedAgentSession {
   ManagedAgentSession._({
-    required AgentLoop loop,
+    required AgentLoop? loop,
+    required AgentLoop Function(AgentSession session) loopFactory,
+    required Future<ManagedAgentSession> Function(
+      ManagedAgentSession session,
+      String profileId,
+      String prompt,
+    )?
+    delegateHandler,
+    required Stream<AgentRunEvent> Function(
+      ManagedAgentSession session,
+      String profileId,
+      String prompt,
+    )?
+    delegateStreamHandler,
     required AgentSessionStore store,
     required AgentSession session,
     required String Function() sessionIdGenerator,
     required String Function() runIdGenerator,
   }) : _loop = loop,
+       _loopFactory = loopFactory,
+       _delegateHandler = delegateHandler,
+       _delegateStreamHandler = delegateStreamHandler,
        _store = store,
        _session = session,
        _sessionIdGenerator = sessionIdGenerator,
        _runIdGenerator = runIdGenerator;
 
-  final AgentLoop _loop;
+  final AgentLoop? _loop;
+  final AgentLoop Function(AgentSession session) _loopFactory;
+  final Future<ManagedAgentSession> Function(
+    ManagedAgentSession session,
+    String profileId,
+    String prompt,
+  )?
+  _delegateHandler;
+  final Stream<AgentRunEvent> Function(
+    ManagedAgentSession session,
+    String profileId,
+    String prompt,
+  )?
+  _delegateStreamHandler;
   final AgentSessionStore _store;
   final String Function() _sessionIdGenerator;
   final String Function() _runIdGenerator;
@@ -97,6 +182,10 @@ class ManagedAgentSession {
   String get id => _session.id ?? (throw StateError('Session id is missing.'));
 
   String? get parentId => _session.parentId;
+
+  String? get profileId => _session.profileId;
+
+  String? get delegatingAgentId => _session.delegatingAgentId;
 
   List<AgentMessage> get transcript => _session.transcript;
 
@@ -110,6 +199,9 @@ class ManagedAgentSession {
 
     return ManagedAgentSession._(
       loop: _loop,
+      loopFactory: _loopFactory,
+      delegateHandler: _delegateHandler,
+      delegateStreamHandler: _delegateStreamHandler,
       store: _store,
       session: branchSession,
       sessionIdGenerator: _sessionIdGenerator,
@@ -119,9 +211,10 @@ class ManagedAgentSession {
 
   Future<AgentRunResult> run(String prompt) async {
     final activeRun = _beginRun();
+    final loop = _loopFactory(_session);
 
     try {
-      final result = await _loop.run(
+      final result = await loop.run(
         prompt,
         session: _session,
         runController: activeRun.controller,
@@ -143,13 +236,18 @@ class ManagedAgentSession {
 
   Stream<AgentRunEvent> stream(String prompt) async* {
     final activeRun = _beginRun();
+    final loop = _loopFactory(_session);
 
     AgentRunResult? completedResult;
 
     try {
-      yield AgentRunStartEvent(sessionId: id, runId: activeRun.runId);
+      yield AgentRunStartEvent(
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
 
-      await for (final event in _loop.stream(
+      await for (final event in loop.stream(
         prompt,
         session: _session,
         runController: activeRun.controller,
@@ -170,18 +268,32 @@ class ManagedAgentSession {
             ),
             sessionId: id,
             runId: activeRun.runId,
+            agentId: profileId,
           );
           continue;
         }
 
-        yield _annotateEvent(event, sessionId: id, runId: activeRun.runId);
+        yield _annotateEvent(
+          event,
+          sessionId: id,
+          runId: activeRun.runId,
+          agentId: profileId,
+        );
       }
 
       if (completedResult == null) {
         await _store.save(_session);
       }
     } on AgentRunCancelledException {
-      yield AgentRunCancelledEvent(sessionId: id, runId: activeRun.runId);
+      yield AgentRunCancelledEvent(
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+    } on AgentPermissionDeniedException {
+      return;
+    } on AgentApprovalRequiredException {
+      return;
     } finally {
       _finishRun(activeRun);
     }
@@ -194,6 +306,42 @@ class ManagedAgentSession {
     }
 
     return activeRun.controller.cancel();
+  }
+
+  Future<ManagedAgentSession> delegate(String profileId, String prompt) async {
+    final delegateHandler = _delegateHandler;
+    if (delegateHandler == null) {
+      throw UnsupportedError('Delegation is not configured for this session.');
+    }
+
+    return delegateHandler(this, profileId, prompt);
+  }
+
+  Stream<AgentRunEvent> delegateStream(String profileId, String prompt) {
+    final delegateStreamHandler = _delegateStreamHandler;
+    if (delegateStreamHandler == null) {
+      throw UnsupportedError('Delegation streaming is not configured.');
+    }
+
+    return delegateStreamHandler(this, profileId, prompt);
+  }
+
+  Future<List<ManagedAgentSession>> children() async {
+    final sessions = await _store.listByParent(id);
+    return sessions
+        .map(
+          (session) => ManagedAgentSession._(
+            loop: _loop,
+            loopFactory: _loopFactory,
+            delegateHandler: _delegateHandler,
+            delegateStreamHandler: _delegateStreamHandler,
+            store: _store,
+            session: session,
+            sessionIdGenerator: _sessionIdGenerator,
+            runIdGenerator: _runIdGenerator,
+          ),
+        )
+        .toList(growable: false);
   }
 
   _ActiveManagedRun _beginRun() {
@@ -219,12 +367,14 @@ class ManagedAgentSession {
     AgentRunEvent event, {
     required String sessionId,
     required String runId,
+    String? agentId,
   }) {
     return switch (event) {
       AgentAssistantEvent(message: final message) => AgentAssistantEvent(
         message: message,
         sessionId: sessionId,
         runId: runId,
+        agentId: agentId,
       ),
       AgentMessagePartEvent(message: final message, part: final part) =>
         AgentMessagePartEvent(
@@ -232,30 +382,57 @@ class ManagedAgentSession {
           part: part,
           sessionId: sessionId,
           runId: runId,
+          agentId: agentId,
         ),
       AgentToolCallEvent(call: final call) => AgentToolCallEvent(
         call: call,
         sessionId: sessionId,
         runId: runId,
+        agentId: agentId,
       ),
       AgentToolResultEvent(result: final result) => AgentToolResultEvent(
         result: result,
         sessionId: sessionId,
         runId: runId,
+        agentId: agentId,
       ),
       AgentRunCompleteEvent(result: final result) => AgentRunCompleteEvent(
         result: result,
         sessionId: sessionId,
         runId: runId,
+        agentId: agentId,
       ),
       AgentRunStartEvent() => AgentRunStartEvent(
         sessionId: sessionId,
         runId: runId,
+        agentId: agentId,
       ),
       AgentRunCancelledEvent() => AgentRunCancelledEvent(
         sessionId: sessionId,
         runId: runId,
+        agentId: agentId,
       ),
+      AgentPermissionEvent(decision: final decision) => AgentPermissionEvent(
+        decision: decision,
+        sessionId: sessionId,
+        runId: runId,
+        agentId: agentId,
+      ),
+      AgentDelegationEvent(
+        phase: final phase,
+        parentSessionId: final parentSessionId,
+        childSessionId: final childSessionId,
+        delegatedAgentId: final delegatedAgentId,
+      ) =>
+        AgentDelegationEvent(
+          phase: phase,
+          parentSessionId: parentSessionId,
+          childSessionId: childSessionId,
+          delegatedAgentId: delegatedAgentId,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
     };
   }
 }

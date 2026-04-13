@@ -67,6 +67,62 @@ void main() {
       },
     );
   });
+
+  group('AgentLoopSdk agent runtime', () {
+    test('exposes configured agent profiles and subagent delegation', () async {
+      final sdk = AgentLoopSdk(
+        model: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(id: 'primary'),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+        store: InMemoryAgentSessionStore(),
+        sessionIdGenerator: _IdSequence(<String>[
+          'session-1',
+          'session-2',
+        ]).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await sdk.createSession(profileId: 'primary');
+      final child = await session.delegate('researcher', 'hello');
+
+      expect(sdk.visibleProfiles.map((profile) => profile.id), <String>[
+        'primary',
+        'researcher',
+      ]);
+      expect(child.parentId, 'session-1');
+      expect(child.delegatingAgentId, 'primary');
+    });
+
+    test(
+      'surfaces permission-aware subagent invocation through the SDK',
+      () async {
+        final sdk = AgentLoopSdk(
+          model: const LoopbackModel(),
+          profiles: const <AgentProfile>[
+            AgentProfile(
+              id: 'primary',
+              permissionPolicy: DeclarativeAgentPermissionPolicy(
+                subagentPermissions: <String, AgentPermissionOutcome>{
+                  'researcher': AgentPermissionOutcome.deny,
+                },
+              ),
+            ),
+            AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+          ],
+          store: InMemoryAgentSessionStore(),
+        );
+
+        final session = await sdk.createSession(profileId: 'primary');
+
+        await expectLater(
+          session.delegate('researcher', 'hello'),
+          throwsA(isA<AgentPermissionDeniedException>()),
+        );
+      },
+    );
+  });
 }
 
 class _IdSequence {
