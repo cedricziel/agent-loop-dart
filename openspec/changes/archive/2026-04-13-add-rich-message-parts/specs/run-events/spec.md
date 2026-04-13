@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: SDK emits structured run lifecycle events
 The SDK SHALL expose structured run lifecycle events so consumers can observe loop progress before a final `AgentRunResult` is available, including part-level updates for assistant output and tool state.

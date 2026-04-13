@@ -28,8 +28,12 @@ class DemoModel implements AgentModel {
 
     if (lastMessage.role == AgentRole.tool && lastMessage.toolResult != null) {
       return AgentResponse(
-        text:
-            'The tool `${lastMessage.toolResult!.name}` returned ${lastMessage.toolResult!.output}.',
+        parts: <MessagePart>[
+          TextPart(
+            text:
+                'The tool `${lastMessage.toolResult!.name}` returned ${lastMessage.toolResult!.output}.',
+          ),
+        ],
       );
     }
 
@@ -42,15 +46,44 @@ class DemoModel implements AgentModel {
     if (prompt.contains('time') &&
         turn.tools.any((tool) => tool.name == 'clock')) {
       return AgentResponse(
+        parts: <MessagePart>[
+          const ReasoningPart(text: 'Need the clock tool first.'),
+        ],
         toolCalls: <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
       );
     }
 
+    if (prompt.contains('report')) {
+      return AgentResponse(
+        parts: <MessagePart>[
+          const TextPart(text: 'Generated report'),
+          const FilePart(path: 'build/report.txt', mimeType: 'text/plain'),
+        ],
+      );
+    }
+
     return AgentResponse(
-      text: 'Demo model response: ${latestUserMessage.content}',
+      parts: <MessagePart>[
+        TextPart(text: 'Demo model response: ${latestUserMessage.content}'),
+      ],
     );
   }
 }
+
+String? formatPartForLog(MessagePart part) => switch (part) {
+  ReasoningPart(text: final text) => 'assistant:reasoning $text',
+  FilePart(path: final path, mimeType: final mimeType) =>
+    'assistant:file $path ($mimeType)',
+  ToolPart(name: final name, state: ToolPartState.pending) =>
+    'tool:pending $name',
+  ToolPart(
+    name: final name,
+    state: ToolPartState.completed,
+    output: final output,
+  ) =>
+    'tool:completed $name => ${output ?? ''}',
+  TextPart() => null,
+};
 
 Future<int> runCli(List<String> args) async {
   if (args.isEmpty) {
@@ -70,15 +103,20 @@ Future<int> runCli(List<String> args) async {
 
   await for (final event in sdk.stream(prompt: args.join(' '))) {
     switch (event) {
+      case AgentMessagePartEvent(part: final part):
+        final line = formatPartForLog(part);
+        if (line != null && line.isNotEmpty) {
+          stderr.writeln(line);
+        }
       case AgentAssistantEvent(message: final message)
           when message.toolCall != null:
         stderr.writeln('assistant: ${message.content}');
-      case AgentToolCallEvent(call: final call):
-        stderr.writeln('tool:start ${call.name}');
-      case AgentToolResultEvent(result: final toolResult):
-        stderr.writeln(
-          'tool:result ${toolResult.name} => ${toolResult.output}',
-        );
+      case AgentToolCallEvent():
+        // Tool parts already describe pending tool state.
+        break;
+      case AgentToolResultEvent():
+        // Tool parts already describe completed tool state.
+        break;
       case AgentRunCompleteEvent(result: final completedResult):
         result = completedResult;
       case AgentAssistantEvent():

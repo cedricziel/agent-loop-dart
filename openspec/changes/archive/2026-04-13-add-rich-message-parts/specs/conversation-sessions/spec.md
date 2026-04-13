@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: SDK can continue an existing conversation
 The SDK SHALL allow a caller to start a run from existing conversation state so follow-up prompts can build on prior transcript history, including previously recorded structured message parts.

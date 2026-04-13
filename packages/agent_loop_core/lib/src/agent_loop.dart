@@ -67,13 +67,19 @@ class AgentLoop {
       final response = await _respond(workingTranscript);
 
       if (response.toolCalls.isEmpty) {
-        final text = response.text ?? '';
-        final message = AgentMessage(role: AgentRole.assistant, content: text);
+        final message = AgentMessage(
+          role: AgentRole.assistant,
+          content: response.parts.isEmpty ? (response.text ?? '') : '',
+          parts: response.parts,
+        );
         workingTranscript.add(message);
         yield AgentAssistantEvent(message: message);
+        for (final part in message.parts) {
+          yield AgentMessagePartEvent(message: message, part: part);
+        }
 
         final result = AgentRunResult(
-          output: text,
+          output: message.content,
           transcript: List.unmodifiable(workingTranscript),
           session: AgentSession(transcript: workingTranscript),
           steps: step,
@@ -83,14 +89,37 @@ class AgentLoop {
         return;
       }
 
+      if (response.parts.isNotEmpty) {
+        final assistantMessage = AgentMessage(
+          role: AgentRole.assistant,
+          parts: response.parts,
+        );
+        workingTranscript.add(assistantMessage);
+        yield AgentAssistantEvent(message: assistantMessage);
+        for (final part in assistantMessage.parts) {
+          yield AgentMessagePartEvent(message: assistantMessage, part: part);
+        }
+      }
+
       for (final toolCall in response.toolCalls) {
         final assistantMessage = AgentMessage(
           role: AgentRole.assistant,
           content: 'Calling tool `${toolCall.name}`',
+          parts: <MessagePart>[
+            ToolPart(
+              callId: toolCall.id,
+              name: toolCall.name,
+              state: ToolPartState.pending,
+              input: toolCall.input,
+            ),
+          ],
           toolCall: toolCall,
         );
         workingTranscript.add(assistantMessage);
         yield AgentAssistantEvent(message: assistantMessage);
+        for (final part in assistantMessage.parts) {
+          yield AgentMessagePartEvent(message: assistantMessage, part: part);
+        }
         yield AgentToolCallEvent(call: toolCall);
 
         final tool = _tools[toolCall.name];
@@ -104,13 +133,24 @@ class AgentLoop {
           output: output,
         );
 
-        workingTranscript.add(
-          AgentMessage(
-            role: AgentRole.tool,
-            content: output,
-            toolResult: toolResult,
-          ),
+        final toolMessage = AgentMessage(
+          role: AgentRole.tool,
+          content: output,
+          parts: <MessagePart>[
+            ToolPart(
+              callId: toolCall.id,
+              name: toolCall.name,
+              state: ToolPartState.completed,
+              input: toolCall.input,
+              output: output,
+            ),
+          ],
+          toolResult: toolResult,
         );
+        workingTranscript.add(toolMessage);
+        for (final part in toolMessage.parts) {
+          yield AgentMessagePartEvent(message: toolMessage, part: part);
+        }
         yield AgentToolResultEvent(result: toolResult);
       }
     }

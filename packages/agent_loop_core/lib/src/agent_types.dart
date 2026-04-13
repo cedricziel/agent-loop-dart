@@ -2,6 +2,48 @@ import 'agent_tool.dart';
 
 enum AgentRole { system, user, assistant, tool }
 
+sealed class MessagePart {
+  const MessagePart();
+}
+
+class TextPart extends MessagePart {
+  const TextPart({required this.text});
+
+  final String text;
+}
+
+class ReasoningPart extends MessagePart {
+  const ReasoningPart({required this.text});
+
+  final String text;
+}
+
+class FilePart extends MessagePart {
+  const FilePart({required this.path, required this.mimeType, this.label});
+
+  final String path;
+  final String mimeType;
+  final String? label;
+}
+
+enum ToolPartState { pending, completed }
+
+class ToolPart extends MessagePart {
+  const ToolPart({
+    required this.callId,
+    required this.name,
+    required this.state,
+    this.input = const <String, Object?>{},
+    this.output,
+  });
+
+  final String callId;
+  final String name;
+  final ToolPartState state;
+  final Map<String, Object?> input;
+  final String? output;
+}
+
 class ToolCall {
   const ToolCall({
     required this.id,
@@ -29,26 +71,64 @@ class ToolResult {
 class AgentMessage {
   const AgentMessage({
     required this.role,
-    required this.content,
+    String content = '',
+    List<MessagePart> parts = const <MessagePart>[],
     this.toolCall,
     this.toolResult,
-  });
+  }) : _content = content,
+       _parts = parts;
 
   final AgentRole role;
-  final String content;
+  final String _content;
+  final List<MessagePart> _parts;
   final ToolCall? toolCall;
   final ToolResult? toolResult;
+
+  String get content => _content.isNotEmpty ? _content : textContent;
+
+  List<MessagePart> get parts => _parts.isNotEmpty
+      ? _parts
+      : (content.isEmpty
+            ? const <MessagePart>[]
+            : <MessagePart>[TextPart(text: content)]);
+
+  String get textContent =>
+      parts.whereType<TextPart>().map((part) => part.text).join();
 }
 
 class AgentResponse {
-  AgentResponse({this.text, this.toolCalls = const <ToolCall>[]})
-    : assert(
-        text != null || toolCalls.isNotEmpty,
-        'A response must include text or at least one tool call.',
-      );
+  AgentResponse({
+    String? text,
+    List<MessagePart> parts = const <MessagePart>[],
+    this.toolCalls = const <ToolCall>[],
+  }) : _text = text,
+       _parts = parts,
+       assert(
+         text != null || parts.isNotEmpty || toolCalls.isNotEmpty,
+         'A response must include text, parts, or at least one tool call.',
+       );
 
-  final String? text;
+  final String? _text;
+  final List<MessagePart> _parts;
   final List<ToolCall> toolCalls;
+
+  List<MessagePart> get parts => _parts.isNotEmpty
+      ? _parts
+      : (_text == null || _text.isEmpty
+            ? const <MessagePart>[]
+            : <MessagePart>[TextPart(text: _text)]);
+
+  String? get text {
+    if (_text != null) {
+      return _text;
+    }
+
+    final combined = parts
+        .whereType<TextPart>()
+        .map((part) => part.text)
+        .join();
+    return combined.isEmpty ? null : combined;
+  }
 }
 
 class AgentRunResult {
@@ -103,6 +183,13 @@ class AgentAssistantEvent extends AgentRunEvent {
   const AgentAssistantEvent({required this.message});
 
   final AgentMessage message;
+}
+
+class AgentMessagePartEvent extends AgentRunEvent {
+  const AgentMessagePartEvent({required this.message, required this.part});
+
+  final AgentMessage message;
+  final MessagePart part;
 }
 
 class AgentToolCallEvent extends AgentRunEvent {

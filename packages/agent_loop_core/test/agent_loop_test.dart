@@ -62,10 +62,13 @@ void main() {
         final events = await loop.stream('time?').toList();
 
         expect(events[0], isA<AgentAssistantEvent>());
-        expect(events[1], isA<AgentToolCallEvent>());
-        expect(events[2], isA<AgentToolResultEvent>());
-        expect(events[3], isA<AgentAssistantEvent>());
-        expect(events[4], isA<AgentRunCompleteEvent>());
+        expect(events[1], isA<AgentMessagePartEvent>());
+        expect(events[2], isA<AgentToolCallEvent>());
+        expect(events[3], isA<AgentMessagePartEvent>());
+        expect(events[4], isA<AgentToolResultEvent>());
+        expect(events[5], isA<AgentAssistantEvent>());
+        expect(events[6], isA<AgentMessagePartEvent>());
+        expect(events[7], isA<AgentRunCompleteEvent>());
       },
     );
 
@@ -87,6 +90,125 @@ void main() {
         ]);
       },
     );
+
+    test('derives final output from assistant text parts', () async {
+      final loop = AgentLoop(
+        provider: _SequenceProvider(<AgentResponse>[
+          AgentResponse(
+            parts: <MessagePart>[
+              const TextPart(text: 'Generated '),
+              const FilePart(path: 'build/report.txt', mimeType: 'text/plain'),
+              const TextPart(text: 'report'),
+            ],
+          ),
+        ]),
+      );
+
+      final result = await loop.run('generate a report');
+
+      expect(result.output, 'Generated report');
+      expect(result.transcript.last.parts, hasLength(3));
+      expect(result.transcript.last.parts[1], isA<FilePart>());
+    });
+
+    test(
+      'preserves provider parts and tool activity in transcript order',
+      () async {
+        final loop = AgentLoop(
+          provider: _SequenceProvider(<AgentResponse>[
+            AgentResponse(
+              parts: <MessagePart>[
+                const ReasoningPart(text: 'Need the clock tool first.'),
+              ],
+              toolCalls: <ToolCall>[
+                const ToolCall(id: 'clock-1', name: 'clock'),
+              ],
+            ),
+            AgentResponse(parts: <MessagePart>[const TextPart(text: 'done')]),
+          ]),
+          tools: <AgentTool>[_ClockTool()],
+        );
+
+        final result = await loop.run('time?');
+
+        expect(result.transcript[1].parts.single, isA<ReasoningPart>());
+        expect(result.transcript[2].parts.single, isA<ToolPart>());
+        expect(
+          (result.transcript[2].parts.single as ToolPart).state,
+          ToolPartState.pending,
+        );
+        expect(result.transcript[3].parts.single, isA<ToolPart>());
+        expect(
+          (result.transcript[3].parts.single as ToolPart).state,
+          ToolPartState.completed,
+        );
+        expect(result.transcript.last.content, 'done');
+      },
+    );
+
+    test(
+      'emits ordered part updates for assistant and tool activity',
+      () async {
+        final loop = AgentLoop(
+          provider: _SequenceProvider(<AgentResponse>[
+            AgentResponse(
+              parts: <MessagePart>[
+                const ReasoningPart(text: 'Need the clock tool first.'),
+              ],
+              toolCalls: <ToolCall>[
+                const ToolCall(id: 'clock-1', name: 'clock'),
+              ],
+            ),
+            AgentResponse(parts: <MessagePart>[const TextPart(text: 'done')]),
+          ]),
+          tools: <AgentTool>[_ClockTool()],
+        );
+
+        final events = await loop.stream('time?').toList();
+        final partEvents = events.whereType<AgentMessagePartEvent>().toList();
+
+        expect(partEvents.map((event) => event.part.runtimeType), <Type>[
+          ReasoningPart,
+          ToolPart,
+          ToolPart,
+          TextPart,
+        ]);
+        expect(
+          events.indexWhere((event) => event is AgentAssistantEvent),
+          lessThan(
+            events.indexWhere((event) => event is AgentMessagePartEvent),
+          ),
+        );
+        expect(events.last, isA<AgentRunCompleteEvent>());
+      },
+    );
+
+    test('does not replay prior part events when resuming a session', () async {
+      final loop = AgentLoop(
+        provider: _SequenceProvider(<AgentResponse>[
+          AgentResponse(
+            parts: <MessagePart>[const TextPart(text: 'fresh reply')],
+          ),
+        ]),
+      );
+      final session = AgentSession(
+        transcript: <AgentMessage>[
+          const AgentMessage(
+            role: AgentRole.assistant,
+            parts: <MessagePart>[
+              FilePart(path: 'build/old.txt', mimeType: 'text/plain'),
+            ],
+          ),
+        ],
+      );
+
+      final events = await loop.stream('follow up', session: session).toList();
+      final partEvents = events.whereType<AgentMessagePartEvent>().toList();
+
+      expect(partEvents, hasLength(1));
+      expect(partEvents.single.part, isA<TextPart>());
+      expect(partEvents.single.part, isNot(isA<FilePart>()));
+    });
   });
 }
 
