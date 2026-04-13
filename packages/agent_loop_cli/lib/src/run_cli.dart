@@ -94,6 +94,11 @@ AgentLoopSdk createDemoSdk() {
       AgentProfile(
         id: 'primary',
         systemPrompt: 'You are a compact coding agent.',
+        permissionPolicy: DeclarativeAgentPermissionPolicy(
+          toolPermissions: <String, AgentPermissionOutcome>{
+            'clock': AgentPermissionOutcome.ask,
+          },
+        ),
       ),
       AgentProfile(
         id: 'researcher',
@@ -127,6 +132,29 @@ Future<int> runCli(List<String> args) async {
       ? session.delegateStream('researcher', prompt)
       : session.stream(prompt);
 
+  await _consumeEvents(events, session, (completedResult) {
+    result = completedResult;
+  });
+
+  while (session.pendingApproval != null) {
+    final approved = await _resolvePendingApproval(session.pendingApproval!);
+    final resolutionEvents = approved
+        ? session.approvePendingStream()
+        : session.denyPendingStream();
+    await _consumeEvents(resolutionEvents, session, (completedResult) {
+      result = completedResult;
+    });
+  }
+
+  stdout.writeln(result?.output ?? '');
+  return 0;
+}
+
+Future<void> _consumeEvents(
+  Stream<AgentRunEvent> events,
+  ManagedAgentSession session,
+  void Function(AgentRunResult result) onComplete,
+) async {
   await for (final event in events) {
     switch (event) {
       case AgentDelegationEvent(
@@ -146,6 +174,12 @@ Future<int> runCli(List<String> args) async {
         stderr.writeln(
           'permission:${decision.outcome.name} ${decision.kind.name} ${decision.subject}',
         );
+      case AgentApprovalRequiredEvent(request: final request):
+        stderr.writeln(
+          'approval:required ${request.decision.kind.name} ${request.decision.subject}',
+        );
+      case AgentApprovalResolvedEvent(resolution: final resolution):
+        stderr.writeln('approval:resolved ${resolution.name}');
       case AgentMessagePartEvent(part: final part):
         final line = formatPartForLog(part);
         if (line != null && line.isNotEmpty) {
@@ -161,7 +195,7 @@ Future<int> runCli(List<String> args) async {
         // Tool parts already describe completed tool state.
         break;
       case AgentRunCompleteEvent(result: final completedResult):
-        result = completedResult;
+        onComplete(completedResult);
       case AgentRunCancelledEvent():
         stderr.writeln('run:cancelled');
       case AgentAssistantEvent():
@@ -169,7 +203,23 @@ Future<int> runCli(List<String> args) async {
         break;
     }
   }
+}
 
-  stdout.writeln(result?.output ?? '');
-  return 0;
+Future<bool> _resolvePendingApproval(
+  AgentPendingApprovalRequest request,
+) async {
+  if (!stdin.hasTerminal) {
+    stderr.writeln('approval:auto approved');
+    return true;
+  }
+
+  stderr.write(
+    'Approve ${request.decision.kind.name} `${request.decision.subject}`? [y/N] ',
+  );
+  final response = stdin.readLineSync()?.trim().toLowerCase();
+  if (response == null) {
+    stderr.writeln('approval:auto approved');
+    return true;
+  }
+  return response == 'y' || response == 'yes';
 }

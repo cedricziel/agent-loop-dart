@@ -18,6 +18,65 @@ class AgentPermissionDecision {
   final String? reason;
 }
 
+sealed class AgentPendingApprovalRequest {
+  const AgentPendingApprovalRequest({
+    required this.runId,
+    required this.decision,
+  });
+
+  final String runId;
+  final AgentPermissionDecision decision;
+
+  AgentPendingApprovalRequest withRunId(String runId);
+}
+
+class AgentToolApprovalRequest extends AgentPendingApprovalRequest {
+  const AgentToolApprovalRequest({
+    required super.runId,
+    required super.decision,
+    required this.toolCall,
+    required this.transcript,
+    required this.step,
+  });
+
+  final ToolCall toolCall;
+  final List<AgentMessage> transcript;
+  final int step;
+
+  @override
+  AgentToolApprovalRequest withRunId(String runId) {
+    return AgentToolApprovalRequest(
+      runId: runId,
+      decision: decision,
+      toolCall: toolCall,
+      transcript: transcript,
+      step: step,
+    );
+  }
+}
+
+class AgentSubagentApprovalRequest extends AgentPendingApprovalRequest {
+  const AgentSubagentApprovalRequest({
+    required super.runId,
+    required super.decision,
+    required this.delegatedAgentId,
+    required this.prompt,
+  });
+
+  final String delegatedAgentId;
+  final String prompt;
+
+  @override
+  AgentSubagentApprovalRequest withRunId(String runId) {
+    return AgentSubagentApprovalRequest(
+      runId: runId,
+      decision: decision,
+      delegatedAgentId: delegatedAgentId,
+      prompt: prompt,
+    );
+  }
+}
+
 abstract interface class AgentPermissionPolicy {
   Future<AgentPermissionDecision> evaluateTool(ToolCall toolCall);
 
@@ -61,7 +120,8 @@ class AgentPermissionDeniedException implements Exception {
 }
 
 class AgentApprovalRequiredException implements Exception {
-  const AgentApprovalRequiredException(this.decision);
+  const AgentApprovalRequiredException(this.decision, {this.request});
 
   final AgentPermissionDecision decision;
+  final AgentPendingApprovalRequest? request;
 }

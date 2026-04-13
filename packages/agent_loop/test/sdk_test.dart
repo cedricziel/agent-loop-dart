@@ -81,7 +81,7 @@ void main() {
           'session-1',
           'session-2',
         ]).next,
-        runIdGenerator: _IdSequence(<String>['run-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
       );
 
       final session = await sdk.createSession(profileId: 'primary');
@@ -122,6 +122,37 @@ void main() {
         );
       },
     );
+
+    test(
+      'exposes pending approval inspection and approval resolution',
+      () async {
+        final sdk = AgentLoopSdk(
+          provider: _ToolThenAnswerProvider(),
+          tools: <AgentTool>[const _ClockTool()],
+          profiles: const <AgentProfile>[
+            AgentProfile(
+              id: 'primary',
+              permissionPolicy: DeclarativeAgentPermissionPolicy(
+                toolPermissions: <String, AgentPermissionOutcome>{
+                  'clock': AgentPermissionOutcome.ask,
+                },
+              ),
+            ),
+          ],
+          store: InMemoryAgentSessionStore(),
+          sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+          runIdGenerator: _IdSequence(<String>['run-1']).next,
+        );
+
+        final session = await sdk.createSession(profileId: 'primary');
+        final pausedEvents = await session.stream('what time is it?').toList();
+        final result = await session.approvePending();
+
+        expect(pausedEvents.last, isA<AgentApprovalRequiredEvent>());
+        expect(session.pendingApproval, isNull);
+        expect(result.output, 'The time is 12:00.');
+      },
+    );
   });
 }
 
@@ -139,4 +170,29 @@ class _BlockingProvider implements AgentProvider {
 
   @override
   Future<AgentResponse> respond(AgentTurn turn) => _response.future;
+}
+
+class _ClockTool implements AgentTool {
+  const _ClockTool();
+
+  @override
+  ToolDefinition get definition =>
+      const ToolDefinition(name: 'clock', description: 'Returns the time.');
+
+  @override
+  Future<String> execute(Map<String, Object?> input) async => '12:00';
+}
+
+class _ToolThenAnswerProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final last = turn.messages.last;
+    if (last.role == AgentRole.tool) {
+      return AgentResponse(text: 'The time is ${last.content}.');
+    }
+
+    return AgentResponse(
+      toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+    );
+  }
 }

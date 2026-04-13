@@ -45,12 +45,14 @@ class AgentSessionManager {
       ManagedAgentSession session,
       String profileId,
       String prompt,
+      bool skipPermissionCheck,
     )?
     delegateHandler,
     Stream<AgentRunEvent> Function(
       ManagedAgentSession session,
       String profileId,
       String prompt,
+      bool skipPermissionCheck,
     )?
     delegateStreamHandler,
     AgentSessionStore? store,
@@ -74,12 +76,14 @@ class AgentSessionManager {
     ManagedAgentSession session,
     String profileId,
     String prompt,
+    bool skipPermissionCheck,
   )?
   _delegateHandler;
   final Stream<AgentRunEvent> Function(
     ManagedAgentSession session,
     String profileId,
     String prompt,
+    bool skipPermissionCheck,
   )?
   _delegateStreamHandler;
   final AgentSessionStore _store;
@@ -138,12 +142,14 @@ class ManagedAgentSession {
       ManagedAgentSession session,
       String profileId,
       String prompt,
+      bool skipPermissionCheck,
     )?
     delegateHandler,
     required Stream<AgentRunEvent> Function(
       ManagedAgentSession session,
       String profileId,
       String prompt,
+      bool skipPermissionCheck,
     )?
     delegateStreamHandler,
     required AgentSessionStore store,
@@ -165,12 +171,14 @@ class ManagedAgentSession {
     ManagedAgentSession session,
     String profileId,
     String prompt,
+    bool skipPermissionCheck,
   )?
   _delegateHandler;
   final Stream<AgentRunEvent> Function(
     ManagedAgentSession session,
     String profileId,
     String prompt,
+    bool skipPermissionCheck,
   )?
   _delegateStreamHandler;
   final AgentSessionStore _store;
@@ -186,6 +194,8 @@ class ManagedAgentSession {
   String? get profileId => _session.profileId;
 
   String? get delegatingAgentId => _session.delegatingAgentId;
+
+  AgentPendingApprovalRequest? get pendingApproval => _session.pendingApproval;
 
   List<AgentMessage> get transcript => _session.transcript;
 
@@ -229,6 +239,9 @@ class ManagedAgentSession {
         session: managedSession,
         steps: result.steps,
       );
+    } on AgentApprovalRequiredException catch (error) {
+      await _pauseForApproval(activeRun, error);
+      rethrow;
     } finally {
       _finishRun(activeRun);
     }
@@ -292,7 +305,14 @@ class ManagedAgentSession {
       );
     } on AgentPermissionDeniedException {
       return;
-    } on AgentApprovalRequiredException {
+    } on AgentApprovalRequiredException catch (error) {
+      final request = await _pauseForApproval(activeRun, error);
+      yield AgentApprovalRequiredEvent(
+        request: request,
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
       return;
     } finally {
       _finishRun(activeRun);
@@ -314,7 +334,16 @@ class ManagedAgentSession {
       throw UnsupportedError('Delegation is not configured for this session.');
     }
 
-    return delegateHandler(this, profileId, prompt);
+    final activeRun = _beginRun();
+
+    try {
+      return await delegateHandler(this, profileId, prompt, false);
+    } on AgentApprovalRequiredException catch (error) {
+      await _pauseForApproval(activeRun, error);
+      rethrow;
+    } finally {
+      _finishRun(activeRun);
+    }
   }
 
   Stream<AgentRunEvent> delegateStream(String profileId, String prompt) {
@@ -323,7 +352,156 @@ class ManagedAgentSession {
       throw UnsupportedError('Delegation streaming is not configured.');
     }
 
-    return delegateStreamHandler(this, profileId, prompt);
+    final activeRun = _beginRun();
+
+    return (() async* {
+      try {
+        await for (final event in delegateStreamHandler(
+          this,
+          profileId,
+          prompt,
+          false,
+        )) {
+          yield _annotateDelegationRunEvent(event, runId: activeRun.runId);
+        }
+      } on AgentPermissionDeniedException catch (error) {
+        yield AgentPermissionEvent(
+          decision: error.decision,
+          sessionId: id,
+          runId: activeRun.runId,
+          agentId: this.profileId,
+        );
+      } on AgentApprovalRequiredException catch (error) {
+        yield AgentPermissionEvent(
+          decision: error.decision,
+          sessionId: id,
+          runId: activeRun.runId,
+          agentId: this.profileId,
+        );
+        final request = await _pauseForApproval(activeRun, error);
+        yield AgentApprovalRequiredEvent(
+          request: request,
+          sessionId: id,
+          runId: activeRun.runId,
+          agentId: this.profileId,
+        );
+      } finally {
+        _finishRun(activeRun);
+      }
+    })();
+  }
+
+  Future<AgentRunResult> approvePending() async {
+    AgentRunResult? result;
+    await for (final event in approvePendingStream()) {
+      if (event is AgentRunCompleteEvent) {
+        result = event.result;
+      }
+    }
+
+    if (result == null) {
+      throw StateError('Approved pending request did not complete the run.');
+    }
+
+    return result;
+  }
+
+  Stream<AgentRunEvent> approvePendingStream() async* {
+    final request = pendingApproval;
+    if (request == null) {
+      throw StateError('No pending approval request is available.');
+    }
+
+    final activeRun = _resumePendingRun(request.runId);
+    await _clearPendingApproval();
+
+    try {
+      yield AgentApprovalResolvedEvent(
+        request: request,
+        resolution: AgentApprovalResolution.approved,
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+
+      switch (request) {
+        case AgentToolApprovalRequest():
+          final loop = _loopFactory(_session);
+          await for (final event in loop.resumeToolApproval(
+            request,
+            runController: activeRun.controller,
+          )) {
+            if (event is AgentRunCompleteEvent) {
+              final managedSession = _session.copyWith(
+                transcript: event.result.transcript,
+              );
+              _session = managedSession;
+              await _store.save(_session);
+              yield AgentRunCompleteEvent(
+                result: AgentRunResult(
+                  output: event.result.output,
+                  transcript: event.result.transcript,
+                  session: managedSession,
+                  steps: event.result.steps,
+                ),
+                sessionId: id,
+                runId: activeRun.runId,
+                agentId: profileId,
+              );
+              continue;
+            }
+
+            yield _annotateEvent(
+              event,
+              sessionId: id,
+              runId: activeRun.runId,
+              agentId: profileId,
+            );
+          }
+        case AgentSubagentApprovalRequest():
+          final delegateStreamHandler = _delegateStreamHandler;
+          if (delegateStreamHandler == null) {
+            throw UnsupportedError('Delegation streaming is not configured.');
+          }
+
+          await for (final event in delegateStreamHandler(
+            this,
+            request.delegatedAgentId,
+            request.prompt,
+            true,
+          )) {
+            yield _annotateDelegationRunEvent(event, runId: activeRun.runId);
+          }
+      }
+    } finally {
+      _finishRun(activeRun);
+    }
+  }
+
+  Future<void> denyPending() async {
+    await denyPendingStream().drain<void>();
+  }
+
+  Stream<AgentRunEvent> denyPendingStream() async* {
+    final request = pendingApproval;
+    if (request == null) {
+      throw StateError('No pending approval request is available.');
+    }
+
+    final activeRun = _resumePendingRun(request.runId);
+    await _clearPendingApproval();
+
+    try {
+      yield AgentApprovalResolvedEvent(
+        request: request,
+        resolution: AgentApprovalResolution.denied,
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+    } finally {
+      _finishRun(activeRun);
+    }
   }
 
   Future<List<ManagedAgentSession>> children() async {
@@ -345,12 +523,25 @@ class ManagedAgentSession {
   }
 
   _ActiveManagedRun _beginRun() {
-    if (_activeRun != null) {
+    if (_activeRun != null || _session.pendingApproval != null) {
       throw AgentSessionRunActiveException(id);
     }
 
     final activeRun = _ActiveManagedRun(
       runId: _runIdGenerator(),
+      controller: AgentRunController(),
+    );
+    _activeRun = activeRun;
+    return activeRun;
+  }
+
+  _ActiveManagedRun _resumePendingRun(String runId) {
+    if (_activeRun != null) {
+      throw AgentSessionRunActiveException(id);
+    }
+
+    final activeRun = _ActiveManagedRun(
+      runId: runId,
       controller: AgentRunController(),
     );
     _activeRun = activeRun;
@@ -418,6 +609,24 @@ class ManagedAgentSession {
         runId: runId,
         agentId: agentId,
       ),
+      AgentApprovalRequiredEvent(request: final request) =>
+        AgentApprovalRequiredEvent(
+          request: request,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
+      AgentApprovalResolvedEvent(
+        request: final request,
+        resolution: final resolution,
+      ) =>
+        AgentApprovalResolvedEvent(
+          request: request,
+          resolution: resolution,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
       AgentDelegationEvent(
         phase: final phase,
         parentSessionId: final parentSessionId,
@@ -434,6 +643,56 @@ class ManagedAgentSession {
           agentId: agentId,
         ),
     };
+  }
+
+  AgentRunEvent _annotateDelegationRunEvent(
+    AgentRunEvent event, {
+    required String runId,
+  }) {
+    return switch (event) {
+      AgentDelegationEvent(
+        phase: final phase,
+        parentSessionId: final parentSessionId,
+        childSessionId: final childSessionId,
+        delegatedAgentId: final delegatedAgentId,
+      ) =>
+        AgentDelegationEvent(
+          phase: phase,
+          parentSessionId: parentSessionId,
+          childSessionId: childSessionId,
+          delegatedAgentId: delegatedAgentId,
+          sessionId: id,
+          runId: runId,
+          agentId: profileId,
+        ),
+      AgentPermissionEvent(decision: final decision) => AgentPermissionEvent(
+        decision: decision,
+        sessionId: id,
+        runId: runId,
+        agentId: profileId,
+      ),
+      _ => event,
+    };
+  }
+
+  Future<AgentPendingApprovalRequest> _pauseForApproval(
+    _ActiveManagedRun activeRun,
+    AgentApprovalRequiredException error,
+  ) async {
+    final baseRequest = error.request;
+    if (baseRequest == null) {
+      throw StateError('Approval pause is missing a pending request payload.');
+    }
+
+    final request = baseRequest.withRunId(activeRun.runId);
+    _session = _session.copyWith(pendingApproval: request);
+    await _store.save(_session);
+    return request;
+  }
+
+  Future<void> _clearPendingApproval() async {
+    _session = _session.copyWith(pendingApproval: null);
+    await _store.save(_session);
   }
 }
 

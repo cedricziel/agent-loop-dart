@@ -80,7 +80,36 @@ class AgentLoop {
 
     workingTranscript.add(AgentMessage(role: AgentRole.user, content: prompt));
 
-    for (var step = 1; step <= maxSteps; step++) {
+    yield* _executeLoop(
+      workingTranscript,
+      startStep: 1,
+      runController: runController,
+    );
+  }
+
+  Stream<AgentRunEvent> resumeToolApproval(
+    AgentToolApprovalRequest request, {
+    AgentRunController? runController,
+  }) async* {
+    final workingTranscript = <AgentMessage>[...request.transcript];
+    yield* _executeToolCall(
+      workingTranscript,
+      request.toolCall,
+      runController: runController,
+    );
+    yield* _executeLoop(
+      workingTranscript,
+      startStep: request.step + 1,
+      runController: runController,
+    );
+  }
+
+  Stream<AgentRunEvent> _executeLoop(
+    List<AgentMessage> workingTranscript, {
+    required int startStep,
+    required AgentRunController? runController,
+  }) async* {
+    for (var step = startStep; step <= maxSteps; step++) {
       _throwIfCancelled(runController);
       final response = await _withCancellation(
         _respond(workingTranscript),
@@ -132,71 +161,91 @@ class AgentLoop {
             case AgentPermissionOutcome.allow:
               break;
             case AgentPermissionOutcome.ask:
-              throw AgentApprovalRequiredException(decision);
+              throw AgentApprovalRequiredException(
+                decision,
+                request: AgentToolApprovalRequest(
+                  runId: '',
+                  decision: decision,
+                  toolCall: toolCall,
+                  transcript: List<AgentMessage>.unmodifiable(
+                    workingTranscript,
+                  ),
+                  step: step,
+                ),
+              );
             case AgentPermissionOutcome.deny:
               throw AgentPermissionDeniedException(decision);
           }
         }
 
-        final assistantMessage = AgentMessage(
-          role: AgentRole.assistant,
-          content: 'Calling tool `${toolCall.name}`',
-          parts: <MessagePart>[
-            ToolPart(
-              callId: toolCall.id,
-              name: toolCall.name,
-              state: ToolPartState.pending,
-              input: toolCall.input,
-            ),
-          ],
-          toolCall: toolCall,
+        yield* _executeToolCall(
+          workingTranscript,
+          toolCall,
+          runController: runController,
         );
-        workingTranscript.add(assistantMessage);
-        yield AgentAssistantEvent(message: assistantMessage);
-        for (final part in assistantMessage.parts) {
-          yield AgentMessagePartEvent(message: assistantMessage, part: part);
-        }
-        yield AgentToolCallEvent(call: toolCall);
-
-        final tool = _tools[toolCall.name];
-        final output = tool == null
-            ? 'Tool `${toolCall.name}` is not registered.'
-            : await _withCancellation(
-                tool.execute(toolCall.input),
-                runController,
-              );
-
-        final toolResult = ToolResult(
-          callId: toolCall.id,
-          name: toolCall.name,
-          output: output,
-        );
-
-        final toolMessage = AgentMessage(
-          role: AgentRole.tool,
-          content: output,
-          parts: <MessagePart>[
-            ToolPart(
-              callId: toolCall.id,
-              name: toolCall.name,
-              state: ToolPartState.completed,
-              input: toolCall.input,
-              output: output,
-            ),
-          ],
-          toolResult: toolResult,
-        );
-        workingTranscript.add(toolMessage);
-        for (final part in toolMessage.parts) {
-          yield AgentMessagePartEvent(message: toolMessage, part: part);
-        }
-        yield AgentToolResultEvent(result: toolResult);
       }
     }
 
     throw StateError(
       'Agent loop exceeded maxSteps=$maxSteps without a final response.',
     );
+  }
+
+  Stream<AgentRunEvent> _executeToolCall(
+    List<AgentMessage> workingTranscript,
+    ToolCall toolCall, {
+    required AgentRunController? runController,
+  }) async* {
+    final assistantMessage = AgentMessage(
+      role: AgentRole.assistant,
+      content: 'Calling tool `${toolCall.name}`',
+      parts: <MessagePart>[
+        ToolPart(
+          callId: toolCall.id,
+          name: toolCall.name,
+          state: ToolPartState.pending,
+          input: toolCall.input,
+        ),
+      ],
+      toolCall: toolCall,
+    );
+    workingTranscript.add(assistantMessage);
+    yield AgentAssistantEvent(message: assistantMessage);
+    for (final part in assistantMessage.parts) {
+      yield AgentMessagePartEvent(message: assistantMessage, part: part);
+    }
+    yield AgentToolCallEvent(call: toolCall);
+
+    final tool = _tools[toolCall.name];
+    final output = tool == null
+        ? 'Tool `${toolCall.name}` is not registered.'
+        : await _withCancellation(tool.execute(toolCall.input), runController);
+
+    final toolResult = ToolResult(
+      callId: toolCall.id,
+      name: toolCall.name,
+      output: output,
+    );
+
+    final toolMessage = AgentMessage(
+      role: AgentRole.tool,
+      content: output,
+      parts: <MessagePart>[
+        ToolPart(
+          callId: toolCall.id,
+          name: toolCall.name,
+          state: ToolPartState.completed,
+          input: toolCall.input,
+          output: output,
+        ),
+      ],
+      toolResult: toolResult,
+    );
+    workingTranscript.add(toolMessage);
+    for (final part in toolMessage.parts) {
+      yield AgentMessagePartEvent(message: toolMessage, part: part);
+    }
+    yield AgentToolResultEvent(result: toolResult);
   }
 
   Future<AgentResponse> _respond(List<AgentMessage> transcript) async {

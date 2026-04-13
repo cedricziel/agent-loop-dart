@@ -159,6 +159,7 @@ class AgentSession {
     this.parentId,
     this.profileId,
     this.delegatingAgentId,
+    this.pendingApproval,
     required List<AgentMessage> transcript,
   }) : transcript = List.unmodifiable(transcript);
 
@@ -166,6 +167,7 @@ class AgentSession {
   final String? parentId;
   final String? profileId;
   final String? delegatingAgentId;
+  final AgentPendingApprovalRequest? pendingApproval;
   final List<AgentMessage> transcript;
 
   AgentSession copyWith({
@@ -173,6 +175,7 @@ class AgentSession {
     Object? parentId = _agentSessionNoValue,
     Object? profileId = _agentSessionNoValue,
     Object? delegatingAgentId = _agentSessionNoValue,
+    Object? pendingApproval = _agentSessionNoValue,
     List<AgentMessage>? transcript,
   }) {
     return AgentSession(
@@ -186,6 +189,9 @@ class AgentSession {
       delegatingAgentId: identical(delegatingAgentId, _agentSessionNoValue)
           ? this.delegatingAgentId
           : delegatingAgentId as String?,
+      pendingApproval: identical(pendingApproval, _agentSessionNoValue)
+          ? this.pendingApproval
+          : pendingApproval as AgentPendingApprovalRequest?,
       transcript: transcript ?? this.transcript,
     );
   }
@@ -299,6 +305,32 @@ class AgentPermissionEvent extends AgentRunEvent {
   });
 
   final AgentPermissionDecision decision;
+}
+
+class AgentApprovalRequiredEvent extends AgentRunEvent {
+  const AgentApprovalRequiredEvent({
+    required this.request,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentPendingApprovalRequest request;
+}
+
+enum AgentApprovalResolution { approved, denied }
+
+class AgentApprovalResolvedEvent extends AgentRunEvent {
+  const AgentApprovalResolvedEvent({
+    required this.request,
+    required this.resolution,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentPendingApprovalRequest request;
+  final AgentApprovalResolution resolution;
 }
 
 enum AgentDelegationPhase { start, complete }

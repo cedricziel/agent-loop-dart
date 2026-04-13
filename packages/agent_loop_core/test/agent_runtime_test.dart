@@ -98,6 +98,47 @@ void main() {
       );
     });
 
+    test('pauses tool approval requests on managed sessions', () async {
+      final store = InMemoryAgentSessionStore();
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'approval');
+      final events = await session.stream('what time is it?').toList();
+      final reloaded = await runtime.loadSession('session-1');
+
+      expect(events.whereType<AgentPermissionEvent>(), hasLength(1));
+      expect(events.whereType<AgentToolCallEvent>(), isEmpty);
+      expect(events.whereType<AgentToolResultEvent>(), isEmpty);
+      expect(session.pendingApproval, isNotNull);
+      expect(session.pendingApproval!.runId, 'run-1');
+      expect(
+        session.pendingApproval!.decision.outcome,
+        AgentPermissionOutcome.ask,
+      );
+      expect(session.pendingApproval, isA<AgentToolApprovalRequest>());
+      expect(
+        (session.pendingApproval as AgentToolApprovalRequest).toolCall.name,
+        'clock',
+      );
+      expect(reloaded.pendingApproval, isA<AgentToolApprovalRequest>());
+    });
+
     test(
       'emits permission events without fabricating tool transcript activity',
       () async {
@@ -143,7 +184,7 @@ void main() {
           'session-1',
           'session-2',
         ]).next,
-        runIdGenerator: _IdSequence(<String>['run-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
       );
 
       final parent = await runtime.createSession(profileId: 'primary');
@@ -208,6 +249,216 @@ void main() {
         throwsA(isA<AgentApprovalRequiredException>()),
       );
     });
+
+    test('pauses subagent approval requests on managed sessions', () async {
+      final store = InMemoryAgentSessionStore();
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'primary',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              subagentPermissions: <String, AgentPermissionOutcome>{
+                'researcher': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final parent = await runtime.createSession(profileId: 'primary');
+      final events = await parent
+          .delegateStream('researcher', 'hello')
+          .toList();
+      final reloaded = await runtime.loadSession('session-1');
+
+      expect(events.whereType<AgentPermissionEvent>(), hasLength(1));
+      expect(events.whereType<AgentDelegationEvent>(), isEmpty);
+      expect(parent.pendingApproval, isNotNull);
+      expect(parent.pendingApproval!.runId, 'run-1');
+      expect(parent.pendingApproval, isA<AgentSubagentApprovalRequest>());
+      expect(
+        (parent.pendingApproval as AgentSubagentApprovalRequest)
+            .delegatedAgentId,
+        'researcher',
+      );
+      expect(reloaded.pendingApproval, isA<AgentSubagentApprovalRequest>());
+    });
+  });
+
+  group('Managed session approval flow', () {
+    test('approves a paused tool request after reload', () async {
+      final store = InMemoryAgentSessionStore();
+      final runtime = AgentRuntime(
+        provider: _ToolThenAnswerProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'approval');
+      await session.stream('what time is it?').drain<void>();
+
+      final reloaded = await runtime.loadSession('session-1');
+      final result = await reloaded.approvePending();
+
+      expect(result.output, 'The time is 12:00.');
+      expect(reloaded.pendingApproval, isNull);
+      expect(reloaded.transcript.map((message) => message.role), <AgentRole>[
+        AgentRole.user,
+        AgentRole.assistant,
+        AgentRole.tool,
+        AgentRole.assistant,
+      ]);
+    });
+
+    test('denies a paused subagent request without creating a child', () async {
+      final store = InMemoryAgentSessionStore();
+      final runtime = AgentRuntime(
+        provider: const LoopbackModel(),
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'primary',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              subagentPermissions: <String, AgentPermissionOutcome>{
+                'researcher': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+          AgentProfile(id: 'researcher', mode: AgentProfileMode.subagent),
+        ],
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>[
+          'session-1',
+          'session-2',
+        ]).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'primary');
+      await session.delegateStream('researcher', 'hello').drain<void>();
+
+      await session.denyPending();
+      final children = await session.children();
+
+      expect(session.pendingApproval, isNull);
+      expect(children, isEmpty);
+      expect(session.transcript, isEmpty);
+    });
+
+    test('rejects new work while approval is pending', () async {
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'approval');
+      await session.stream('what time is it?').drain<void>();
+
+      await expectLater(
+        session.run('another prompt'),
+        throwsA(isA<AgentSessionRunActiveException>()),
+      );
+    });
+  });
+
+  group('Approval lifecycle events', () {
+    test('orders tool approval pause and resume events', () async {
+      final runtime = AgentRuntime(
+        provider: _ToolThenAnswerProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'approval');
+      final pausedEvents = await session.stream('what time is it?').toList();
+      final resumedEvents = await session.approvePendingStream().toList();
+
+      expect(pausedEvents.first, isA<AgentRunStartEvent>());
+      expect(pausedEvents[1], isA<AgentPermissionEvent>());
+      expect(pausedEvents[2], isA<AgentApprovalRequiredEvent>());
+      expect(pausedEvents.whereType<AgentToolCallEvent>(), isEmpty);
+
+      expect(resumedEvents.first, isA<AgentApprovalResolvedEvent>());
+      expect(resumedEvents[1], isA<AgentAssistantEvent>());
+      expect(resumedEvents[2], isA<AgentMessagePartEvent>());
+      expect(resumedEvents[3], isA<AgentToolCallEvent>());
+      expect(resumedEvents[4], isA<AgentMessagePartEvent>());
+      expect(resumedEvents[5], isA<AgentToolResultEvent>());
+      expect(resumedEvents.last, isA<AgentRunCompleteEvent>());
+      expect(resumedEvents.map((event) => event.runId).toSet(), <String>{
+        'run-1',
+      });
+    });
+
+    test('orders denial before terminating paused work', () async {
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(profileId: 'approval');
+      final pausedEvents = await session.stream('what time is it?').toList();
+      final deniedEvents = await session.denyPendingStream().toList();
+
+      expect(pausedEvents.last, isA<AgentApprovalRequiredEvent>());
+      expect(deniedEvents, hasLength(1));
+      expect(deniedEvents.single, isA<AgentApprovalResolvedEvent>());
+      expect(
+        (deniedEvents.single as AgentApprovalResolvedEvent).resolution,
+        AgentApprovalResolution.denied,
+      );
+    });
   });
 
   group('AgentRuntime hooks', () {
@@ -252,7 +503,7 @@ void main() {
           'session-1',
           'session-2',
         ]).next,
-        runIdGenerator: _IdSequence(<String>['run-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
       );
 
       final parent = await runtime.createSession(profileId: 'primary');
@@ -277,7 +528,12 @@ void main() {
             'session-1',
             'session-2',
           ]).next,
-          runIdGenerator: _IdSequence(<String>['run-1', 'run-2', 'run-3']).next,
+          runIdGenerator: _IdSequence(<String>[
+            'run-1',
+            'run-2',
+            'run-3',
+            'run-4',
+          ]).next,
         );
 
         final parent = await runtime.createSession(profileId: 'primary');
@@ -321,7 +577,7 @@ void main() {
           'session-1',
           'session-2',
         ]).next,
-        runIdGenerator: _IdSequence(<String>['run-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
       );
 
       final parent = await runtime.createSession(profileId: 'primary');
@@ -350,6 +606,20 @@ void main() {
 class _ToolCallingProvider implements AgentProvider {
   @override
   Future<AgentResponse> respond(AgentTurn turn) async {
+    return AgentResponse(
+      toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+    );
+  }
+}
+
+class _ToolThenAnswerProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final last = turn.messages.last;
+    if (last.role == AgentRole.tool) {
+      return AgentResponse(text: 'The time is ${last.content}.');
+    }
+
     return AgentResponse(
       toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
     );

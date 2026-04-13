@@ -143,8 +143,14 @@ class AgentRuntime {
     ManagedAgentSession session,
     String profileId,
     String prompt,
+    bool skipPermissionCheck,
   ) async {
-    final child = await _createDelegatedChild(session, profileId);
+    final child = await _createDelegatedChild(
+      session,
+      profileId,
+      prompt,
+      skipPermissionCheck: skipPermissionCheck,
+    );
     await child.run(prompt);
     return child;
   }
@@ -153,8 +159,14 @@ class AgentRuntime {
     ManagedAgentSession session,
     String profileId,
     String prompt,
+    bool skipPermissionCheck,
   ) async* {
-    final child = await _createDelegatedChild(session, profileId);
+    final child = await _createDelegatedChild(
+      session,
+      profileId,
+      prompt,
+      skipPermissionCheck: skipPermissionCheck,
+    );
 
     yield AgentDelegationEvent(
       phase: AgentDelegationPhase.start,
@@ -182,7 +194,9 @@ class AgentRuntime {
   Future<ManagedAgentSession> _createDelegatedChild(
     ManagedAgentSession session,
     String profileId,
-  ) async {
+    String prompt, {
+    bool skipPermissionCheck = false,
+  }) async {
     for (final hook in _hooks) {
       await hook.onDelegation(
         AgentDelegationHookEvent(
@@ -194,9 +208,9 @@ class AgentRuntime {
     }
 
     final parentProfile = _profiles[session.profileId];
-    final decision = await parentProfile?.permissionPolicy?.evaluateSubagent(
-      profileId,
-    );
+    final decision = skipPermissionCheck
+        ? null
+        : await parentProfile?.permissionPolicy?.evaluateSubagent(profileId);
     if (decision != null) {
       for (final hook in _hooks) {
         await hook.onPermissionEvaluated(decision, session);
@@ -205,7 +219,15 @@ class AgentRuntime {
         case AgentPermissionOutcome.allow:
           break;
         case AgentPermissionOutcome.ask:
-          throw AgentApprovalRequiredException(decision);
+          throw AgentApprovalRequiredException(
+            decision,
+            request: AgentSubagentApprovalRequest(
+              runId: '',
+              decision: decision,
+              delegatedAgentId: profileId,
+              prompt: prompt,
+            ),
+          );
         case AgentPermissionOutcome.deny:
           throw AgentPermissionDeniedException(decision);
       }
