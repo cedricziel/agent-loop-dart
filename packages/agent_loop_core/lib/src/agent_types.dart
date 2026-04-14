@@ -85,16 +85,18 @@ class AgentMessage {
   final ToolCall? toolCall;
   final ToolResult? toolResult;
 
-  String get content => _content.isNotEmpty ? _content : textContent;
+  String get content => _content.isNotEmpty ? _content : _derivedTextContent;
 
   List<MessagePart> get parts => _parts.isNotEmpty
       ? _parts
-      : (content.isEmpty
+      : (_content.isEmpty
             ? const <MessagePart>[]
-            : <MessagePart>[TextPart(text: content)]);
+            : <MessagePart>[TextPart(text: _content)]);
 
-  String get textContent =>
-      parts.whereType<TextPart>().map((part) => part.text).join();
+  String get textContent => _derivedTextContent;
+
+  String get _derivedTextContent =>
+      _parts.whereType<TextPart>().map((part) => part.text).join();
 }
 
 class AgentResponse {

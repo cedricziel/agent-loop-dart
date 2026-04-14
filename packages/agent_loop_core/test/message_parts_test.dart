@@ -31,5 +31,16 @@ void main() {
       expect(message.parts, <Matcher>[isA<TextPart>()]);
       expect(message.content, 'plain text');
     });
+
+    test('preserves tool-only messages without recursively deriving text', () {
+      final message = AgentMessage(
+        role: AgentRole.assistant,
+        toolCall: const ToolCall(id: 'clock-1', name: 'clock'),
+      );
+
+      expect(message.parts, isEmpty);
+      expect(message.textContent, isEmpty);
+      expect(message.content, isEmpty);
+    });
   });
 }

@@ -1,0 +1,18 @@
+name: agent_loop_examples
+description: Runnable local examples for agent_loop.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+resolution: workspace
+
+dependencies:
+  agent_loop:
+    path: ../agent_loop
+  agent_loop_provider_ollama:
+    path: ../agent_loop_provider_ollama
+
+dev_dependencies:
+  lints: ^6.0.0

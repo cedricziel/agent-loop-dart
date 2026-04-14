@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'agent_model.dart';
 import 'agent_permissions.dart';
 import 'agent_run_control.dart';
@@ -111,21 +113,50 @@ class AgentLoop {
   }) async* {
     for (var step = startStep; step <= maxSteps; step++) {
       _throwIfCancelled(runController);
-      final response = await _withCancellation(
-        _respond(workingTranscript),
-        runController,
+      final streamedParts = <MessagePart>[];
+      AgentResponse? response;
+
+      await for (final providerEvent in _respondEvents(
+        workingTranscript,
+        runController: runController,
+      )) {
+        switch (providerEvent) {
+          case _ProviderPartialResponseEvent(part: final part):
+            streamedParts.add(part);
+            yield AgentMessagePartEvent(
+              message: AgentMessage(
+                role: AgentRole.assistant,
+                parts: List<MessagePart>.unmodifiable(streamedParts),
+              ),
+              part: part,
+            );
+          case _ProviderFinalResponseEvent(response: final finalResponse):
+            response = finalResponse;
+        }
+      }
+
+      final completedResponse = response;
+      if (completedResponse == null) {
+        throw StateError('Provider completed without a final response.');
+      }
+
+      final responseParts = _resolveResponseParts(
+        completedResponse,
+        streamedParts,
       );
 
-      if (response.toolCalls.isEmpty) {
+      if (completedResponse.toolCalls.isEmpty) {
         final message = AgentMessage(
           role: AgentRole.assistant,
-          content: response.parts.isEmpty ? (response.text ?? '') : '',
-          parts: response.parts,
+          content: responseParts.isEmpty ? (completedResponse.text ?? '') : '',
+          parts: responseParts,
         );
         workingTranscript.add(message);
         yield AgentAssistantEvent(message: message);
-        for (final part in message.parts) {
-          yield AgentMessagePartEvent(message: message, part: part);
+        if (streamedParts.isEmpty) {
+          for (final part in message.parts) {
+            yield AgentMessagePartEvent(message: message, part: part);
+          }
         }
 
         final result = AgentRunResult(
@@ -139,19 +170,21 @@ class AgentLoop {
         return;
       }
 
-      if (response.parts.isNotEmpty) {
+      if (responseParts.isNotEmpty) {
         final assistantMessage = AgentMessage(
           role: AgentRole.assistant,
-          parts: response.parts,
+          parts: responseParts,
         );
         workingTranscript.add(assistantMessage);
         yield AgentAssistantEvent(message: assistantMessage);
-        for (final part in assistantMessage.parts) {
-          yield AgentMessagePartEvent(message: assistantMessage, part: part);
+        if (streamedParts.isEmpty) {
+          for (final part in assistantMessage.parts) {
+            yield AgentMessagePartEvent(message: assistantMessage, part: part);
+          }
         }
       }
 
-      for (final toolCall in response.toolCalls) {
+      for (final toolCall in completedResponse.toolCalls) {
         _throwIfCancelled(runController);
 
         final decision = await toolPermissionCheck?.call(toolCall);
@@ -248,15 +281,45 @@ class AgentLoop {
     yield AgentToolResultEvent(result: toolResult);
   }
 
-  Future<AgentResponse> _respond(List<AgentMessage> transcript) async {
+  Stream<_ProviderLoopEvent> _respondEvents(
+    List<AgentMessage> transcript, {
+    required AgentRunController? runController,
+  }) async* {
+    final turn = AgentTurn(
+      messages: List.unmodifiable(transcript),
+      tools: _tools.definitions,
+    );
+
     try {
-      return await _provider.respond(
-        AgentTurn(
-          messages: List.unmodifiable(transcript),
-          tools: _tools.definitions,
-        ),
+      final provider = _provider;
+      if (provider is AgentStreamingProvider) {
+        final iterator = StreamIterator<AgentProviderEvent>(
+          provider.streamRespond(turn),
+        );
+        try {
+          while (await _withCancellation(iterator.moveNext(), runController)) {
+            final event = iterator.current;
+            switch (event) {
+              case AgentProviderPartialOutputEvent(part: final part):
+                yield _ProviderPartialResponseEvent(part);
+              case AgentProviderResponseEvent(response: final response):
+                yield _ProviderFinalResponseEvent(response);
+            }
+          }
+        } finally {
+          await iterator.cancel();
+        }
+        return;
+      }
+
+      final response = await _withCancellation(
+        provider.respond(turn),
+        runController,
       );
+      yield _ProviderFinalResponseEvent(response);
     } on AgentProviderException {
+      rethrow;
+    } on AgentRunCancelledException {
       rethrow;
     } catch (error, stackTrace) {
       throw AgentProviderException(
@@ -265,6 +328,37 @@ class AgentLoop {
         stackTrace: stackTrace,
       );
     }
+  }
+
+  List<MessagePart> _resolveResponseParts(
+    AgentResponse response,
+    List<MessagePart> streamedParts,
+  ) {
+    if (streamedParts.isEmpty) {
+      return response.parts;
+    }
+
+    final responseParts = response.parts;
+    if (responseParts.isEmpty) {
+      return List<MessagePart>.unmodifiable(streamedParts);
+    }
+
+    final streamedText = streamedParts
+        .whereType<TextPart>()
+        .map((part) => part.text)
+        .join();
+    final responseText = responseParts
+        .whereType<TextPart>()
+        .map((part) => part.text)
+        .join();
+    final hasOnlyTextParts =
+        streamedParts.every((part) => part is TextPart) &&
+        responseParts.every((part) => part is TextPart);
+    if (hasOnlyTextParts && streamedText == responseText) {
+      return List<MessagePart>.unmodifiable(streamedParts);
+    }
+
+    return responseParts;
   }
 
   Future<T> _withCancellation<T>(
@@ -288,4 +382,20 @@ class AgentLoop {
       throw const AgentRunCancelledException();
     }
   }
+}
+
+sealed class _ProviderLoopEvent {
+  const _ProviderLoopEvent();
+}
+
+class _ProviderPartialResponseEvent extends _ProviderLoopEvent {
+  const _ProviderPartialResponseEvent(this.part);
+
+  final MessagePart part;
+}
+
+class _ProviderFinalResponseEvent extends _ProviderLoopEvent {
+  const _ProviderFinalResponseEvent(this.response);
+
+  final AgentResponse response;
 }

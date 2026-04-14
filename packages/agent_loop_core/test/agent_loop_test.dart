@@ -72,6 +72,75 @@ void main() {
       },
     );
 
+    test('keeps non-streaming providers compatible', () async {
+      final loop = AgentLoop(
+        provider: _SequenceProvider(<AgentResponse>[
+          AgentResponse(text: 'plain reply'),
+        ]),
+      );
+
+      final events = await loop.stream('hello').toList();
+
+      expect(events.map((event) => event.runtimeType), <Type>[
+        AgentAssistantEvent,
+        AgentMessagePartEvent,
+        AgentRunCompleteEvent,
+      ]);
+      expect(
+        (events.last as AgentRunCompleteEvent).result.output,
+        'plain reply',
+      );
+    });
+
+    test('emits streamed partial output before final tool activity', () async {
+      final loop = AgentLoop(
+        provider: _StreamingProvider(<List<AgentProviderEvent>>[
+          <AgentProviderEvent>[
+            const AgentProviderPartialOutputEvent(
+              part: TextPart(text: 'Checking '),
+            ),
+            const AgentProviderPartialOutputEvent(
+              part: TextPart(text: 'the clock'),
+            ),
+            AgentProviderResponseEvent(
+              response: AgentResponse(
+                parts: const <MessagePart>[
+                  TextPart(text: 'Checking '),
+                  TextPart(text: 'the clock'),
+                ],
+                toolCalls: const <ToolCall>[
+                  ToolCall(id: 'clock-1', name: 'clock'),
+                ],
+              ),
+            ),
+          ],
+          <AgentProviderEvent>[
+            AgentProviderResponseEvent(
+              response: AgentResponse(
+                parts: const <MessagePart>[TextPart(text: 'done')],
+              ),
+            ),
+          ],
+        ]),
+        tools: <AgentTool>[_ClockTool()],
+      );
+
+      final events = await loop.stream('time?').toList();
+
+      expect(events[0], isA<AgentMessagePartEvent>());
+      expect((events[0] as AgentMessagePartEvent).part, isA<TextPart>());
+      expect(events[1], isA<AgentMessagePartEvent>());
+      expect(events[2], isA<AgentAssistantEvent>());
+      expect(events[3], isA<AgentAssistantEvent>());
+      expect(events[4], isA<AgentMessagePartEvent>());
+      expect(events[5], isA<AgentToolCallEvent>());
+      expect(events.last, isA<AgentRunCompleteEvent>());
+      expect(
+        (events.last as AgentRunCompleteEvent).result.transcript.last.content,
+        'done',
+      );
+    });
+
     test(
       'resumes from prior session while keeping one-shot flow additive',
       () async {
@@ -243,5 +312,32 @@ class _ThrowingProvider implements AgentProvider {
   @override
   Future<AgentResponse> respond(AgentTurn turn) {
     throw StateError('provider failed');
+  }
+}
+
+class _StreamingProvider implements AgentStreamingProvider {
+  _StreamingProvider(this._eventSequences);
+
+  final List<List<AgentProviderEvent>> _eventSequences;
+  var _index = 0;
+
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    throw UnimplementedError('Streaming provider should use streamRespond.');
+  }
+
+  @override
+  Stream<AgentProviderEvent> streamRespond(AgentTurn turn) async* {
+    final events = _index < _eventSequences.length
+        ? _eventSequences[_index++]
+        : <AgentProviderEvent>[
+            AgentProviderResponseEvent(
+              response: AgentResponse(text: turn.messages.last.content),
+            ),
+          ];
+
+    for (final event in events) {
+      yield event;
+    }
   }
 }

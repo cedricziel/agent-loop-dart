@@ -8,6 +8,8 @@ workspace:
   - packages/agent_loop_core
   - packages/agent_loop
   - packages/agent_loop_cli
+  - packages/agent_loop_provider_ollama
+  - packages/agent_loop_examples
 
 dev_dependencies:
   lints: ^6.0.0
