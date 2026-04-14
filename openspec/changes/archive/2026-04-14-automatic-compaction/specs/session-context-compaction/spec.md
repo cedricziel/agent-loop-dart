@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Managed sessions can compact older context explicitly
 The SDK SHALL allow a caller to compact a managed session by summarizing an older prefix of conversation history while retaining a configurable recent suffix of raw transcript messages, and SHALL preserve the same compaction model when compaction is triggered automatically by managed-session policy.
@@ -25,10 +25,3 @@ The SDK SHALL require compaction to execute through an explicit summarizer bound
 #### Scenario: Automatic compaction resolves a configured summarizer
 - **WHEN** automatic compaction is triggered for a managed session that stores a summarizer identifier or equivalent runtime compaction strategy
 - **THEN** the SDK resolves the configured summarizer through the runtime boundary before performing compaction
-
-### Requirement: Compacted sessions resume with summary-backed context
-The SDK SHALL reconstruct provider-facing context for a compacted managed session by combining the persisted compaction summary with the retained raw transcript suffix before evaluating the next user prompt.
-
-#### Scenario: Follow-up run uses compacted summary and recent raw turns
-- **WHEN** a caller prompts a managed session that has previously been compacted
-- **THEN** the SDK resumes the conversation from the stored summary plus the retained recent raw transcript instead of requiring the compacted-away raw messages to remain in session storage

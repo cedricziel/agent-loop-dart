@@ -7,6 +7,9 @@ abstract interface class AgentSessionSummarizer {
   Future<AgentSessionSummary> summarize(List<AgentMessage> messages);
 }
 
+typedef AgentSessionSummarizerResolver =
+    Future<AgentSessionSummarizer> Function({required String summarizerId});
+
 class AgentSessionCompactionException implements Exception {
   const AgentSessionCompactionException(this.message);
 
@@ -69,6 +72,7 @@ class AgentSessionManager {
     )?
     delegateStreamHandler,
     AgentSessionStore? store,
+    AgentSessionSummarizerResolver? summarizerResolver,
     String Function()? sessionIdGenerator,
     String Function()? runIdGenerator,
   }) : assert(loop != null || loopFactory != null),
@@ -80,6 +84,7 @@ class AgentSessionManager {
        _delegateHandler = delegateHandler,
        _delegateStreamHandler = delegateStreamHandler,
        _store = store ?? InMemoryAgentSessionStore(),
+       _summarizerResolver = summarizerResolver,
        _sessionIdGenerator = sessionIdGenerator ?? _defaultSessionId,
        _runIdGenerator = runIdGenerator ?? _defaultRunId;
 
@@ -100,6 +105,7 @@ class AgentSessionManager {
   )?
   _delegateStreamHandler;
   final AgentSessionStore _store;
+  final AgentSessionSummarizerResolver? _summarizerResolver;
   final String Function() _sessionIdGenerator;
   final String Function() _runIdGenerator;
 
@@ -107,12 +113,14 @@ class AgentSessionManager {
     String? profileId,
     String? parentId,
     String? delegatingAgentId,
+    AgentAutoCompactionPolicy? automaticCompactionPolicy,
   }) async {
     final session = AgentSession(
       id: _sessionIdGenerator(),
       parentId: parentId,
       profileId: profileId,
       delegatingAgentId: delegatingAgentId,
+      autoCompactionPolicy: automaticCompactionPolicy,
       transcript: const <AgentMessage>[],
     );
     await _store.save(session);
@@ -123,6 +131,7 @@ class AgentSessionManager {
       delegateStreamHandler: _delegateStreamHandler,
       store: _store,
       session: session,
+      summarizerResolver: _summarizerResolver,
       sessionIdGenerator: _sessionIdGenerator,
       runIdGenerator: _runIdGenerator,
     );
@@ -141,6 +150,7 @@ class AgentSessionManager {
       delegateStreamHandler: _delegateStreamHandler,
       store: _store,
       session: session,
+      summarizerResolver: _summarizerResolver,
       sessionIdGenerator: _sessionIdGenerator,
       runIdGenerator: _runIdGenerator,
     );
@@ -167,6 +177,7 @@ class ManagedAgentSession {
     delegateStreamHandler,
     required AgentSessionStore store,
     required AgentSession session,
+    required AgentSessionSummarizerResolver? summarizerResolver,
     required String Function() sessionIdGenerator,
     required String Function() runIdGenerator,
   }) : _loop = loop,
@@ -175,6 +186,7 @@ class ManagedAgentSession {
        _delegateStreamHandler = delegateStreamHandler,
        _store = store,
        _session = session,
+       _summarizerResolver = summarizerResolver,
        _sessionIdGenerator = sessionIdGenerator,
        _runIdGenerator = runIdGenerator;
 
@@ -195,6 +207,7 @@ class ManagedAgentSession {
   )?
   _delegateStreamHandler;
   final AgentSessionStore _store;
+  final AgentSessionSummarizerResolver? _summarizerResolver;
   final String Function() _sessionIdGenerator;
   final String Function() _runIdGenerator;
   AgentSession _session;
@@ -212,7 +225,12 @@ class ManagedAgentSession {
 
   AgentSessionCompaction? get compaction => _session.compaction;
 
+  AgentAutoCompactionPolicy? get autoCompactionPolicy =>
+      _session.autoCompactionPolicy;
+
   List<AgentMessage> get transcript => _session.transcript;
+
+  bool get shouldAutoCompact => _session.shouldAutoCompact;
 
   bool canCompact({required int retainLastMessages}) {
     return _session.canCompact(retainLastMessages: retainLastMessages);
@@ -259,17 +277,12 @@ class ManagedAgentSession {
         .skip(body.length - retainLastMessages)
         .toList(growable: false);
     final summary = await summarizer.summarize(compactedPrefix);
-    final compaction = AgentSessionCompaction(
+    final compaction = _applyCompactionResult(
+      transcript: transcript,
+      leadingSystemMessages: leadingSystemMessages,
+      compactedPrefix: compactedPrefix,
+      retainedSuffix: retainedSuffix,
       summary: summary,
-      compactedMessageCount: compactedPrefix.length,
-      retainedMessageCount: retainedSuffix.length,
-    );
-    _session = _session.copyWith(
-      compaction: compaction,
-      transcript: <AgentMessage>[
-        ...transcript.take(leadingSystemMessages),
-        ...retainedSuffix,
-      ],
     );
     await _store.save(_session);
     return compaction;
@@ -280,6 +293,7 @@ class ManagedAgentSession {
       id: _sessionIdGenerator(),
       parentId: id,
       compaction: _session.compaction,
+      autoCompactionPolicy: _session.autoCompactionPolicy,
       transcript: _session.transcript,
     );
     await _store.save(branchSession);
@@ -291,6 +305,7 @@ class ManagedAgentSession {
       delegateStreamHandler: _delegateStreamHandler,
       store: _store,
       session: branchSession,
+      summarizerResolver: _summarizerResolver,
       sessionIdGenerator: _sessionIdGenerator,
       runIdGenerator: _runIdGenerator,
     );
@@ -312,6 +327,7 @@ class ManagedAgentSession {
         ),
       );
       _session = managedSession;
+      await _autoCompactIfNeeded();
       await _store.save(_session);
 
       return AgentRunResult(
@@ -354,7 +370,14 @@ class ManagedAgentSession {
             ),
           );
           _session = managedSession;
+          final compactionEvent = await _autoCompactEvent(
+            runId: activeRun.runId,
+            agentId: profileId,
+          );
           await _store.save(_session);
+          if (compactionEvent != null) {
+            yield compactionEvent;
+          }
           yield AgentRunCompleteEvent(
             result: AgentRunResult(
               output: event.result.output,
@@ -521,7 +544,14 @@ class ManagedAgentSession {
                 ),
               );
               _session = managedSession;
+              final compactionEvent = await _autoCompactEvent(
+                runId: activeRun.runId,
+                agentId: profileId,
+              );
               await _store.save(_session);
+              if (compactionEvent != null) {
+                yield compactionEvent;
+              }
               yield AgentRunCompleteEvent(
                 result: AgentRunResult(
                   output: event.result.output,
@@ -600,6 +630,7 @@ class ManagedAgentSession {
             delegateStreamHandler: _delegateStreamHandler,
             store: _store,
             session: session,
+            summarizerResolver: _summarizerResolver,
             sessionIdGenerator: _sessionIdGenerator,
             runIdGenerator: _runIdGenerator,
           ),
@@ -740,6 +771,17 @@ class ManagedAgentSession {
           runId: runId,
           agentId: agentId,
         ),
+      AgentAutoCompactionEvent(
+        policy: final policy,
+        compaction: final compaction,
+      ) =>
+        AgentAutoCompactionEvent(
+          policy: policy,
+          compaction: compaction,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
       AgentDelegationEvent(
         phase: final phase,
         parentSessionId: final parentSessionId,
@@ -806,6 +848,123 @@ class ManagedAgentSession {
   Future<void> _clearPendingApproval() async {
     _session = _session.copyWith(pendingApproval: null);
     await _store.save(_session);
+  }
+
+  AgentSessionCompaction _applyCompactionResult({
+    required List<AgentMessage> transcript,
+    required int leadingSystemMessages,
+    required List<AgentMessage> compactedPrefix,
+    required List<AgentMessage> retainedSuffix,
+    required AgentSessionSummary summary,
+  }) {
+    final compaction = AgentSessionCompaction(
+      summary: summary,
+      compactedMessageCount: compactedPrefix.length,
+      retainedMessageCount: retainedSuffix.length,
+    );
+    _session = _session.copyWith(
+      compaction: compaction,
+      transcript: <AgentMessage>[
+        ...transcript.take(leadingSystemMessages),
+        ...retainedSuffix,
+      ],
+    );
+    return compaction;
+  }
+
+  Future<void> _autoCompactIfNeeded() async {
+    final policy = _session.autoCompactionPolicy;
+    if (policy == null || !_session.shouldAutoCompact) {
+      return;
+    }
+
+    final summarizerResolver = _summarizerResolver;
+    if (summarizerResolver == null) {
+      throw AgentSessionCompactionException(
+        'Automatic compaction is enabled for session `$id`, but no summarizer resolver is configured.',
+      );
+    }
+
+    final summarizer = await summarizerResolver(
+      summarizerId: policy.summarizerId,
+    );
+    final transcript = _session.transcript;
+    var leadingSystemMessages = 0;
+    while (leadingSystemMessages < transcript.length &&
+        transcript[leadingSystemMessages].role == AgentRole.system) {
+      leadingSystemMessages++;
+    }
+    final body = transcript.skip(leadingSystemMessages).toList(growable: false);
+    final compactedPrefix = body
+        .take(body.length - policy.retainLastMessages)
+        .toList(growable: false);
+    final retainedSuffix = body
+        .skip(body.length - policy.retainLastMessages)
+        .toList(growable: false);
+    final summary = await summarizer.summarize(compactedPrefix);
+    _applyCompactionResult(
+      transcript: transcript,
+      leadingSystemMessages: leadingSystemMessages,
+      compactedPrefix: compactedPrefix,
+      retainedSuffix: retainedSuffix,
+      summary: summary,
+    );
+  }
+
+  Future<AgentAutoCompactionEvent?> _autoCompactEvent({
+    required String runId,
+    required String? agentId,
+  }) async {
+    final policy = _session.autoCompactionPolicy;
+    if (policy == null || !_session.shouldAutoCompact) {
+      return null;
+    }
+
+    final summarizerResolver = _summarizerResolver;
+    if (summarizerResolver == null) {
+      throw AgentSessionCompactionException(
+        'Automatic compaction is enabled for session `$id`, but no summarizer resolver is configured.',
+      );
+    }
+
+    if (_session.pendingApproval != null) {
+      return null;
+    }
+
+    final summarizer = await summarizerResolver(
+      summarizerId: policy.summarizerId,
+    );
+    final transcript = _session.transcript;
+    var leadingSystemMessages = 0;
+    while (leadingSystemMessages < transcript.length &&
+        transcript[leadingSystemMessages].role == AgentRole.system) {
+      leadingSystemMessages++;
+    }
+    final body = transcript.skip(leadingSystemMessages).toList(growable: false);
+    if (body.length <= policy.retainLastMessages) {
+      return null;
+    }
+    final compactedPrefix = body
+        .take(body.length - policy.retainLastMessages)
+        .toList(growable: false);
+    final retainedSuffix = body
+        .skip(body.length - policy.retainLastMessages)
+        .toList(growable: false);
+    final summary = await summarizer.summarize(compactedPrefix);
+    final compaction = _applyCompactionResult(
+      transcript: transcript,
+      leadingSystemMessages: leadingSystemMessages,
+      compactedPrefix: compactedPrefix,
+      retainedSuffix: retainedSuffix,
+      summary: summary,
+    );
+    return AgentAutoCompactionEvent(
+      policy: policy,
+      compaction: compaction,
+      sessionId: id,
+      runId: runId,
+      agentId: agentId,
+    );
   }
 }
 

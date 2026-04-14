@@ -8,6 +8,8 @@ class AgentLoopSdk {
     Iterable<AgentProfile> profiles = const <AgentProfile>[],
     Iterable<AgentRuntimeHook> hooks = const <AgentRuntimeHook>[],
     AgentSessionStore? store,
+    Map<String, AgentSessionSummarizer> automaticCompactionSummarizers =
+        const <String, AgentSessionSummarizer>{},
     String? systemPrompt,
     int maxSteps = 8,
     AgentReliabilityPolicy? reliabilityPolicy,
@@ -32,6 +34,7 @@ class AgentLoopSdk {
          profiles: profiles,
          hooks: hooks,
          store: store,
+         automaticCompactionSummarizers: automaticCompactionSummarizers,
          systemPrompt: systemPrompt,
          maxSteps: maxSteps,
          reliabilityPolicy: reliabilityPolicy,
@@ -56,8 +59,13 @@ class AgentLoopSdk {
     List<AgentMessage> transcript = const <AgentMessage>[],
   }) => _loop.stream(prompt, session: session, transcript: transcript);
 
-  Future<ManagedAgentSession> createSession({String? profileId}) =>
-      _runtime.createSession(profileId: profileId);
+  Future<ManagedAgentSession> createSession({
+    String? profileId,
+    AgentAutoCompactionPolicy? automaticCompactionPolicy,
+  }) => _runtime.createSession(
+    profileId: profileId,
+    automaticCompactionPolicy: automaticCompactionPolicy,
+  );
 
   Future<ManagedAgentSession> loadSession(String id) =>
       _runtime.loadSession(id);

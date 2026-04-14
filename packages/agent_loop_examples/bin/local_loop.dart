@@ -78,6 +78,14 @@ Future<void> main(List<String> args) async {
           'provider:exhausted $attempt/$maxAttempts ${failure.provider} ${failure.kind.name}',
         );
         break;
+      case AgentAutoCompactionEvent(
+        compaction: final compaction,
+        policy: final policy,
+      ):
+        stderr.writeln(
+          'session:auto-compact ${policy.summarizerId} ${compaction.compactedMessageCount}->${compaction.retainedMessageCount}',
+        );
+        break;
     }
   }
 }

@@ -60,6 +60,8 @@ class AgentRuntime {
     Iterable<AgentProfile> profiles = const <AgentProfile>[],
     Iterable<AgentRuntimeHook> hooks = const <AgentRuntimeHook>[],
     AgentSessionStore? store,
+    Map<String, AgentSessionSummarizer> automaticCompactionSummarizers =
+        const <String, AgentSessionSummarizer>{},
     String? systemPrompt,
     int maxSteps = 8,
     AgentReliabilityPolicy? reliabilityPolicy,
@@ -80,6 +82,10 @@ class AgentRuntime {
        },
        _hooks = List<AgentRuntimeHook>.unmodifiable(hooks),
        _store = store ?? InMemoryAgentSessionStore(),
+       _automaticCompactionSummarizers =
+           Map<String, AgentSessionSummarizer>.unmodifiable(
+             automaticCompactionSummarizers,
+           ),
        _sessionIdGenerator = sessionIdGenerator,
        _runIdGenerator = runIdGenerator {
     _sessionManager = AgentSessionManager(
@@ -87,6 +93,7 @@ class AgentRuntime {
       delegateHandler: _delegate,
       delegateStreamHandler: _delegateStream,
       store: _store,
+      summarizerResolver: _resolveAutomaticCompactionSummarizer,
       sessionIdGenerator: _sessionIdGenerator,
       runIdGenerator: _runIdGenerator,
     );
@@ -100,6 +107,7 @@ class AgentRuntime {
   final Map<String, AgentProfile> _profiles;
   final List<AgentRuntimeHook> _hooks;
   final AgentSessionStore _store;
+  final Map<String, AgentSessionSummarizer> _automaticCompactionSummarizers;
   final String Function()? _sessionIdGenerator;
   final String Function()? _runIdGenerator;
   late final AgentSessionManager _sessionManager;
@@ -110,8 +118,14 @@ class AgentRuntime {
 
   AgentProfile? profile(String id) => _profiles[id];
 
-  Future<ManagedAgentSession> createSession({String? profileId}) {
-    return _sessionManager.createSession(profileId: profileId);
+  Future<ManagedAgentSession> createSession({
+    String? profileId,
+    AgentAutoCompactionPolicy? automaticCompactionPolicy,
+  }) {
+    return _sessionManager.createSession(
+      profileId: profileId,
+      automaticCompactionPolicy: automaticCompactionPolicy,
+    );
   }
 
   Future<ManagedAgentSession> loadSession(String id) {
@@ -242,6 +256,7 @@ class AgentRuntime {
       profileId: profileId,
       parentId: session.id,
       delegatingAgentId: session.profileId,
+      automaticCompactionPolicy: session.autoCompactionPolicy,
     );
     for (final hook in _hooks) {
       await hook.onDelegation(
@@ -254,5 +269,18 @@ class AgentRuntime {
       );
     }
     return child;
+  }
+
+  Future<AgentSessionSummarizer> _resolveAutomaticCompactionSummarizer({
+    required String summarizerId,
+  }) async {
+    final summarizer = _automaticCompactionSummarizers[summarizerId];
+    if (summarizer == null) {
+      throw AgentSessionCompactionException(
+        'No automatic compaction summarizer is registered for `$summarizerId`.',
+      );
+    }
+
+    return summarizer;
   }
 }

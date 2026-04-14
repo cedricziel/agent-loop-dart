@@ -166,6 +166,25 @@ class AgentSessionCompaction {
   final int retainedMessageCount;
 }
 
+class AgentAutoCompactionPolicy {
+  const AgentAutoCompactionPolicy({
+    required this.maxTranscriptMessages,
+    required this.retainLastMessages,
+    required this.summarizerId,
+  }) : assert(
+         maxTranscriptMessages >= 0,
+         'maxTranscriptMessages must be zero or greater.',
+       ),
+       assert(
+         retainLastMessages >= 0,
+         'retainLastMessages must be zero or greater.',
+       );
+
+  final int maxTranscriptMessages;
+  final int retainLastMessages;
+  final String summarizerId;
+}
+
 class AgentTurn {
   const AgentTurn({required this.messages, required this.tools});
 
@@ -181,6 +200,7 @@ class AgentSession {
     this.delegatingAgentId,
     this.pendingApproval,
     this.compaction,
+    this.autoCompactionPolicy,
     required List<AgentMessage> transcript,
   }) : transcript = List.unmodifiable(transcript);
 
@@ -190,6 +210,7 @@ class AgentSession {
   final String? delegatingAgentId;
   final AgentPendingApprovalRequest? pendingApproval;
   final AgentSessionCompaction? compaction;
+  final AgentAutoCompactionPolicy? autoCompactionPolicy;
   final List<AgentMessage> transcript;
 
   static const String summaryPrefix = 'Session summary: ';
@@ -256,6 +277,18 @@ class AgentSession {
     return compactableMessageCount > retainLastMessages;
   }
 
+  bool get shouldAutoCompact {
+    final policy = autoCompactionPolicy;
+    if (policy == null) {
+      return false;
+    }
+
+    final compactableMessageCount =
+        transcript.length - _leadingSystemMessageCount;
+    return compactableMessageCount > policy.maxTranscriptMessages &&
+        canCompact(retainLastMessages: policy.retainLastMessages);
+  }
+
   AgentSession copyWith({
     String? id,
     Object? parentId = _agentSessionNoValue,
@@ -263,6 +296,7 @@ class AgentSession {
     Object? delegatingAgentId = _agentSessionNoValue,
     Object? pendingApproval = _agentSessionNoValue,
     Object? compaction = _agentSessionNoValue,
+    Object? autoCompactionPolicy = _agentSessionNoValue,
     List<AgentMessage>? transcript,
   }) {
     return AgentSession(
@@ -282,6 +316,10 @@ class AgentSession {
       compaction: identical(compaction, _agentSessionNoValue)
           ? this.compaction
           : compaction as AgentSessionCompaction?,
+      autoCompactionPolicy:
+          identical(autoCompactionPolicy, _agentSessionNoValue)
+          ? this.autoCompactionPolicy
+          : autoCompactionPolicy as AgentAutoCompactionPolicy?,
       transcript: transcript ?? this.transcript,
     );
   }
@@ -518,6 +556,19 @@ class AgentApprovalResolvedEvent extends AgentRunEvent {
 
   final AgentPendingApprovalRequest request;
   final AgentApprovalResolution resolution;
+}
+
+class AgentAutoCompactionEvent extends AgentRunEvent {
+  const AgentAutoCompactionEvent({
+    required this.policy,
+    required this.compaction,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentAutoCompactionPolicy policy;
+  final AgentSessionCompaction compaction;
 }
 
 enum AgentDelegationPhase { start, complete }

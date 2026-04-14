@@ -31,7 +31,7 @@ The SDK SHALL allow callers to fork a managed session from an existing session s
 - **THEN** the SDK copies that compaction metadata into the new branch together with the branch's initial raw transcript state
 
 ### Requirement: Managed sessions persist through a storage boundary
-The SDK SHALL persist managed session state through a storage interface so callers can save and later restore sessions without coupling the loop to one concrete backend, including any stored compaction metadata alongside the remaining raw transcript and branch metadata.
+The SDK SHALL persist managed session state through a storage interface so callers can save and later restore sessions without coupling the loop to one concrete backend, including any stored compaction metadata alongside the remaining raw transcript, branch metadata, and any configured automatic compaction policy.
 
 #### Scenario: Session store saves updated conversation state
 - **WHEN** a managed session completes a run and persistence is enabled
@@ -48,6 +48,14 @@ The SDK SHALL persist managed session state through a storage interface so calle
 #### Scenario: Caller reloads a compacted session
 - **WHEN** a caller loads a previously saved managed session that contains compaction metadata
 - **THEN** the SDK restores both the remaining raw transcript and the persisted compaction metadata so later runs resume from the compacted state
+
+#### Scenario: Session store saves automatic compaction policy
+- **WHEN** a caller creates or updates a managed session with automatic compaction enabled and persistence is enabled
+- **THEN** the SDK writes the automatic compaction policy together with the session's transcript and metadata through the configured session store
+
+#### Scenario: Caller reloads a session with automatic compaction enabled
+- **WHEN** a caller loads a previously saved managed session that contains automatic compaction policy metadata
+- **THEN** the SDK restores that policy so later runs continue evaluating automatic compaction with the same persisted settings
 
 ### Requirement: Managed sessions persist pending approval state
 The SDK SHALL persist pending approval metadata through the managed session storage boundary so approval requests survive session reload.

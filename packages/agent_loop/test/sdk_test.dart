@@ -120,6 +120,51 @@ void main() {
         'beta',
       ]);
     });
+
+    test('creates a session with automatic compaction policy', () async {
+      final sdk = AgentLoopSdk(
+        model: const LoopbackModel(),
+        store: InMemoryAgentSessionStore(),
+      );
+
+      final session = await sdk.createSession(
+        automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 3,
+          retainLastMessages: 2,
+          summarizerId: 'default',
+        ),
+      );
+
+      expect(session.autoCompactionPolicy, isNotNull);
+      expect(session.autoCompactionPolicy!.summarizerId, 'default');
+    });
+
+    test('emits automatic compaction lifecycle reporting', () async {
+      final sdk = AgentLoopSdk(
+        model: const LoopbackModel(),
+        store: InMemoryAgentSessionStore(),
+        automaticCompactionSummarizers: <String, AgentSessionSummarizer>{
+          'default': _RecordingSummarizer('auto summary'),
+        },
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
+      );
+
+      final session = await sdk.createSession(
+        automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 3,
+          retainLastMessages: 2,
+          summarizerId: 'default',
+        ),
+      );
+
+      await session.stream('hello').drain<void>();
+      final events = await session.stream('follow up').toList();
+
+      expect(events.whereType<AgentAutoCompactionEvent>(), hasLength(1));
+      expect(session.compaction, isNotNull);
+      expect(session.compaction!.summary.text, 'auto summary');
+    });
   });
 
   group('AgentLoopSdk agent runtime', () {

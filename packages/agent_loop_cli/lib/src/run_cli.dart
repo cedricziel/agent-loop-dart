@@ -216,6 +216,13 @@ Future<void> _consumeEvents(
         stderr.writeln(
           'provider:exhausted $attempt/$maxAttempts ${failure.provider} ${failure.kind.name}',
         );
+      case AgentAutoCompactionEvent(
+        compaction: final compaction,
+        policy: final policy,
+      ):
+        stderr.writeln(
+          'session:auto-compact ${policy.summarizerId} ${compaction.compactedMessageCount}->${compaction.retainedMessageCount}',
+        );
       case AgentAssistantEvent():
         // Keep normal assistant text on stdout via the final result only.
         break;

@@ -387,6 +387,43 @@ void main() {
         throwsA(isA<AgentSessionRunActiveException>()),
       );
     });
+
+    test('does not auto compact while approval is pending', () async {
+      final runtime = AgentRuntime(
+        provider: _ToolCallingProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        automaticCompactionSummarizers: <String, AgentSessionSummarizer>{
+          'default': _RecordingSummarizer('auto summary'),
+        },
+        profiles: const <AgentProfile>[
+          AgentProfile(
+            id: 'approval',
+            permissionPolicy: DeclarativeAgentPermissionPolicy(
+              toolPermissions: <String, AgentPermissionOutcome>{
+                'clock': AgentPermissionOutcome.ask,
+              },
+            ),
+          ),
+        ],
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession(
+        profileId: 'approval',
+        automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 1,
+          retainLastMessages: 0,
+          summarizerId: 'default',
+        ),
+      );
+      final events = await session.stream('what time is it?').toList();
+
+      expect(events.whereType<AgentAutoCompactionEvent>(), isEmpty);
+      expect(events.last, isA<AgentApprovalRequiredEvent>());
+      expect(session.pendingApproval, isNotNull);
+      expect(session.compaction, isNull);
+    });
   });
 
   group('Approval lifecycle events', () {
@@ -650,6 +687,17 @@ class _CapturingProvider implements AgentProvider {
     final system = systemMessages.isEmpty ? null : systemMessages.first;
     lastSystemPrompt = system?.content;
     return AgentResponse(text: turn.messages.last.content);
+  }
+}
+
+class _RecordingSummarizer implements AgentSessionSummarizer {
+  _RecordingSummarizer(this.summaryText);
+
+  final String summaryText;
+
+  @override
+  Future<AgentSessionSummary> summarize(List<AgentMessage> messages) async {
+    return AgentSessionSummary(text: summaryText);
   }
 }
 

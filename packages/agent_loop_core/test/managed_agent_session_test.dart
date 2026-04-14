@@ -220,6 +220,161 @@ void main() {
       ]);
     });
 
+    test('persists and reloads automatic compaction policy metadata', () async {
+      final store = InMemoryAgentSessionStore();
+      final manager = AgentSessionManager(
+        loop: AgentLoop(provider: const LoopbackModel()),
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await manager.createSession(
+        automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 3,
+          retainLastMessages: 2,
+          summarizerId: 'default',
+        ),
+      );
+      final reloaded = await manager.loadSession('session-1');
+
+      expect(session.autoCompactionPolicy, isNotNull);
+      expect(reloaded.autoCompactionPolicy, isNotNull);
+      expect(reloaded.autoCompactionPolicy!.summarizerId, 'default');
+      expect(reloaded.autoCompactionPolicy!.maxTranscriptMessages, 3);
+    });
+
+    test('branches by copying automatic compaction policy metadata', () async {
+      final manager = AgentSessionManager(
+        loop: AgentLoop(provider: const LoopbackModel()),
+        store: InMemoryAgentSessionStore(),
+        sessionIdGenerator: _IdSequence(<String>[
+          'session-1',
+          'session-2',
+        ]).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await manager.createSession(
+        automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 3,
+          retainLastMessages: 2,
+          summarizerId: 'default',
+        ),
+      );
+      final branch = await session.branch();
+
+      expect(branch.autoCompactionPolicy, isNotNull);
+      expect(branch.autoCompactionPolicy!.summarizerId, 'default');
+      expect(branch.autoCompactionPolicy!.retainLastMessages, 2);
+    });
+
+    test('reports whether automatic compaction threshold is met', () {
+      final session = AgentSession(
+        autoCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 3,
+          retainLastMessages: 2,
+          summarizerId: 'default',
+        ),
+        transcript: const <AgentMessage>[
+          AgentMessage(role: AgentRole.user, content: 'hello'),
+          AgentMessage(role: AgentRole.assistant, content: 'hello'),
+          AgentMessage(role: AgentRole.user, content: 'follow up'),
+          AgentMessage(role: AgentRole.assistant, content: 'follow up'),
+        ],
+      );
+
+      expect(session.shouldAutoCompact, isTrue);
+    });
+
+    test('does not auto compact while a run is active', () async {
+      final manager = AgentSessionManager(
+        loop: AgentLoop(provider: _BlockingProvider()),
+        store: InMemoryAgentSessionStore(),
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await manager.createSession(
+        automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+          maxTranscriptMessages: 1,
+          retainLastMessages: 0,
+          summarizerId: 'default',
+        ),
+      );
+
+      final run = session.run('blocked');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(session.shouldAutoCompact, isFalse);
+      expect(session.compaction, isNull);
+
+      expect(await session.abort(), isTrue);
+      await expectLater(run, throwsA(isA<AgentRunCancelledException>()));
+    });
+
+    test(
+      'automatically compacts after an eligible managed-session run',
+      () async {
+        final summarizer = _RecordingSummarizer('auto summary');
+        final manager = AgentSessionManager(
+          loop: AgentLoop(provider: const LoopbackModel()),
+          store: InMemoryAgentSessionStore(),
+          summarizerResolver: ({required String summarizerId}) async {
+            expect(summarizerId, 'default');
+            return summarizer;
+          },
+          sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+          runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
+        );
+
+        final session = await manager.createSession(
+          automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+            maxTranscriptMessages: 3,
+            retainLastMessages: 2,
+            summarizerId: 'default',
+          ),
+        );
+
+        await session.run('hello');
+        await session.run('follow up');
+
+        expect(summarizer.calls, hasLength(1));
+        expect(session.compaction, isNotNull);
+        expect(session.compaction!.summary.text, 'auto summary');
+        expect(session.transcript.map((message) => message.content), <String>[
+          'follow up',
+          'follow up',
+        ]);
+      },
+    );
+
+    test(
+      'fails automatic compaction when no summarizer is registered',
+      () async {
+        final manager = AgentSessionManager(
+          loop: AgentLoop(provider: const LoopbackModel()),
+          store: InMemoryAgentSessionStore(),
+          sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+          runIdGenerator: _IdSequence(<String>['run-1', 'run-2']).next,
+        );
+
+        final session = await manager.createSession(
+          automaticCompactionPolicy: const AgentAutoCompactionPolicy(
+            maxTranscriptMessages: 3,
+            retainLastMessages: 2,
+            summarizerId: 'missing',
+          ),
+        );
+
+        await session.run('hello');
+        await expectLater(
+          session.run('follow up'),
+          throwsA(isA<AgentSessionCompactionException>()),
+        );
+      },
+    );
+
     test('rejects a second active run for the same managed session', () async {
       final provider = _BlockingProvider();
       final manager = AgentSessionManager(
