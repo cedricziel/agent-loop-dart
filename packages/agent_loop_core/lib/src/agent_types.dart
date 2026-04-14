@@ -148,6 +148,24 @@ class AgentRunResult {
   final int steps;
 }
 
+class AgentSessionSummary {
+  const AgentSessionSummary({required this.text});
+
+  final String text;
+}
+
+class AgentSessionCompaction {
+  const AgentSessionCompaction({
+    required this.summary,
+    required this.compactedMessageCount,
+    required this.retainedMessageCount,
+  });
+
+  final AgentSessionSummary summary;
+  final int compactedMessageCount;
+  final int retainedMessageCount;
+}
+
 class AgentTurn {
   const AgentTurn({required this.messages, required this.tools});
 
@@ -162,6 +180,7 @@ class AgentSession {
     this.profileId,
     this.delegatingAgentId,
     this.pendingApproval,
+    this.compaction,
     required List<AgentMessage> transcript,
   }) : transcript = List.unmodifiable(transcript);
 
@@ -170,7 +189,72 @@ class AgentSession {
   final String? profileId;
   final String? delegatingAgentId;
   final AgentPendingApprovalRequest? pendingApproval;
+  final AgentSessionCompaction? compaction;
   final List<AgentMessage> transcript;
+
+  static const String summaryPrefix = 'Session summary: ';
+
+  int get _leadingSystemMessageCount {
+    var count = 0;
+    while (count < transcript.length &&
+        transcript[count].role == AgentRole.system) {
+      count++;
+    }
+    return count;
+  }
+
+  List<AgentMessage> get materializedTranscript {
+    final compaction = this.compaction;
+    if (compaction == null) {
+      return transcript;
+    }
+
+    final leadingSystemMessages = transcript.take(_leadingSystemMessageCount);
+    final trailingMessages = transcript.skip(_leadingSystemMessageCount);
+    return List<AgentMessage>.unmodifiable(<AgentMessage>[
+      ...leadingSystemMessages,
+      AgentMessage(
+        role: AgentRole.system,
+        content: '$summaryPrefix${compaction.summary.text}',
+      ),
+      ...trailingMessages,
+    ]);
+  }
+
+  List<AgentMessage> persistedTranscriptFromMaterialized(
+    List<AgentMessage> materializedTranscript,
+  ) {
+    final compaction = this.compaction;
+    if (compaction == null) {
+      return List<AgentMessage>.unmodifiable(materializedTranscript);
+    }
+
+    final summaryIndex = _leadingSystemMessageCount;
+    if (materializedTranscript.length <= summaryIndex) {
+      return List<AgentMessage>.unmodifiable(materializedTranscript);
+    }
+
+    final summaryMessage = materializedTranscript[summaryIndex];
+    if (summaryMessage.role != AgentRole.system ||
+        summaryMessage.content != '$summaryPrefix${compaction.summary.text}') {
+      return List<AgentMessage>.unmodifiable(materializedTranscript);
+    }
+
+    return List<AgentMessage>.unmodifiable(<AgentMessage>[
+      ...materializedTranscript.take(summaryIndex),
+      ...materializedTranscript.skip(summaryIndex + 1),
+    ]);
+  }
+
+  bool canCompact({required int retainLastMessages}) {
+    if (retainLastMessages < 0) {
+      return false;
+    }
+
+    final compactableMessageCount =
+        transcript.length - _leadingSystemMessageCount;
+    return compactableMessageCount > retainLastMessages;
+  }
 
   AgentSession copyWith({
     String? id,
@@ -178,6 +262,7 @@ class AgentSession {
     Object? profileId = _agentSessionNoValue,
     Object? delegatingAgentId = _agentSessionNoValue,
     Object? pendingApproval = _agentSessionNoValue,
+    Object? compaction = _agentSessionNoValue,
     List<AgentMessage>? transcript,
   }) {
     return AgentSession(
@@ -194,6 +279,9 @@ class AgentSession {
       pendingApproval: identical(pendingApproval, _agentSessionNoValue)
           ? this.pendingApproval
           : pendingApproval as AgentPendingApprovalRequest?,
+      compaction: identical(compaction, _agentSessionNoValue)
+          ? this.compaction
+          : compaction as AgentSessionCompaction?,
       transcript: transcript ?? this.transcript,
     );
   }

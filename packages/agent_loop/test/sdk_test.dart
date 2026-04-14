@@ -95,6 +95,31 @@ void main() {
         await cancellation;
       },
     );
+
+    test('compacts a managed session through the SDK surface', () async {
+      final sdk = AgentLoopSdk(
+        provider: _SummaryAwareProvider(),
+        store: InMemoryAgentSessionStore(),
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1', 'run-2', 'run-3']).next,
+      );
+
+      final session = await sdk.createSession();
+      await session.run('alpha');
+      await session.run('beta');
+
+      final compacted = await session.compact(
+        retainLastMessages: 2,
+        summarizer: _RecordingSummarizer('summary of alpha'),
+      );
+
+      expect(compacted.summary.text, 'summary of alpha');
+      expect(session.compaction, isNotNull);
+      expect(session.transcript.map((message) => message.content), <String>[
+        'beta',
+        'beta',
+      ]);
+    });
   });
 
   group('AgentLoopSdk agent runtime', () {
@@ -239,5 +264,35 @@ class _RetrySequenceProvider implements AgentProvider {
       return current;
     }
     throw current as AgentProviderException;
+  }
+}
+
+class _RecordingSummarizer implements AgentSessionSummarizer {
+  _RecordingSummarizer(this._summary);
+
+  final String _summary;
+
+  @override
+  Future<AgentSessionSummary> summarize(List<AgentMessage> messages) async {
+    return AgentSessionSummary(text: _summary);
+  }
+}
+
+class _SummaryAwareProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final latestUserMessage = turn.messages.lastWhere(
+      (message) => message.role == AgentRole.user,
+    );
+    final summaries = turn.messages
+        .where((message) => message.role == AgentRole.system)
+        .map((message) => message.content)
+        .where((message) => message.startsWith('Session summary: '))
+        .toList(growable: false);
+    if (summaries.isEmpty) {
+      return AgentResponse(text: latestUserMessage.content);
+    }
+
+    return AgentResponse(text: latestUserMessage.content);
   }
 }

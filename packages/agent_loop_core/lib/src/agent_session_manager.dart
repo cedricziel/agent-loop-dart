@@ -3,6 +3,19 @@ import 'agent_permissions.dart';
 import 'agent_run_control.dart';
 import 'agent_types.dart';
 
+abstract interface class AgentSessionSummarizer {
+  Future<AgentSessionSummary> summarize(List<AgentMessage> messages);
+}
+
+class AgentSessionCompactionException implements Exception {
+  const AgentSessionCompactionException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'AgentSessionCompactionException: $message';
+}
+
 abstract interface class AgentSessionStore {
   Future<void> save(AgentSession session);
 
@@ -197,12 +210,76 @@ class ManagedAgentSession {
 
   AgentPendingApprovalRequest? get pendingApproval => _session.pendingApproval;
 
+  AgentSessionCompaction? get compaction => _session.compaction;
+
   List<AgentMessage> get transcript => _session.transcript;
+
+  bool canCompact({required int retainLastMessages}) {
+    return _session.canCompact(retainLastMessages: retainLastMessages);
+  }
+
+  Future<AgentSessionCompaction> compact({
+    required int retainLastMessages,
+    required AgentSessionSummarizer summarizer,
+  }) async {
+    if (_activeRun != null) {
+      throw AgentSessionCompactionException(
+        'Cannot compact session `$id` while a run is active.',
+      );
+    }
+    if (_session.pendingApproval != null) {
+      throw AgentSessionCompactionException(
+        'Cannot compact session `$id` while approval is pending.',
+      );
+    }
+    if (retainLastMessages < 0) {
+      throw const AgentSessionCompactionException(
+        'retainLastMessages must be zero or greater.',
+      );
+    }
+
+    final transcript = _session.transcript;
+    var leadingSystemMessages = 0;
+    while (leadingSystemMessages < transcript.length &&
+        transcript[leadingSystemMessages].role == AgentRole.system) {
+      leadingSystemMessages++;
+    }
+
+    final body = transcript.skip(leadingSystemMessages).toList(growable: false);
+    if (body.length <= retainLastMessages) {
+      throw AgentSessionCompactionException(
+        'Session `$id` does not contain enough history to compact while retaining $retainLastMessages messages.',
+      );
+    }
+
+    final compactedPrefix = body
+        .take(body.length - retainLastMessages)
+        .toList(growable: false);
+    final retainedSuffix = body
+        .skip(body.length - retainLastMessages)
+        .toList(growable: false);
+    final summary = await summarizer.summarize(compactedPrefix);
+    final compaction = AgentSessionCompaction(
+      summary: summary,
+      compactedMessageCount: compactedPrefix.length,
+      retainedMessageCount: retainedSuffix.length,
+    );
+    _session = _session.copyWith(
+      compaction: compaction,
+      transcript: <AgentMessage>[
+        ...transcript.take(leadingSystemMessages),
+        ...retainedSuffix,
+      ],
+    );
+    await _store.save(_session);
+    return compaction;
+  }
 
   Future<ManagedAgentSession> branch() async {
     final branchSession = AgentSession(
       id: _sessionIdGenerator(),
       parentId: id,
+      compaction: _session.compaction,
       transcript: _session.transcript,
     );
     await _store.save(branchSession);
@@ -229,7 +306,11 @@ class ManagedAgentSession {
         session: _session,
         runController: activeRun.controller,
       );
-      final managedSession = _session.copyWith(transcript: result.transcript);
+      final managedSession = _session.copyWith(
+        transcript: _session.persistedTranscriptFromMaterialized(
+          result.transcript,
+        ),
+      );
       _session = managedSession;
       await _store.save(_session);
 
@@ -268,7 +349,9 @@ class ManagedAgentSession {
         if (event is AgentRunCompleteEvent) {
           completedResult = event.result;
           final managedSession = _session.copyWith(
-            transcript: event.result.transcript,
+            transcript: _session.persistedTranscriptFromMaterialized(
+              event.result.transcript,
+            ),
           );
           _session = managedSession;
           await _store.save(_session);
@@ -433,7 +516,9 @@ class ManagedAgentSession {
           )) {
             if (event is AgentRunCompleteEvent) {
               final managedSession = _session.copyWith(
-                transcript: event.result.transcript,
+                transcript: _session.persistedTranscriptFromMaterialized(
+                  event.result.transcript,
+                ),
               );
               _session = managedSession;
               await _store.save(_session);

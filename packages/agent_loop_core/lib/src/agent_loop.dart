@@ -70,7 +70,7 @@ class AgentLoop {
     AgentRunController? runController,
   }) async* {
     final workingTranscript = <AgentMessage>[
-      ...?session?.transcript,
+      ...?session?.materializedTranscript,
       ...transcript,
     ];
 

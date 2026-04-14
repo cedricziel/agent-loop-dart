@@ -1,19 +1,4 @@
-## ADDED Requirements
-
-### Requirement: SDK manages long-lived conversation handles
-The SDK SHALL allow callers to create and reopen managed conversation sessions through a stable session identifier instead of requiring the caller to pass raw transcript state into every run, including managed sessions that participate in parent-child delegation hierarchies.
-
-#### Scenario: Caller creates a new root managed session
-- **WHEN** a caller requests a new top-level managed session from the SDK
-- **THEN** the SDK returns a session handle with a stable session identifier, no parent session, and empty conversation state ready for prompting
-
-#### Scenario: Caller reopens a saved managed session
-- **WHEN** a caller loads a previously saved managed session by identifier
-- **THEN** the SDK restores the session transcript and metadata so follow-up prompts continue from the saved conversation state
-
-#### Scenario: Runtime creates a delegated child session
-- **WHEN** a parent agent delegates work to an allowed subagent profile
-- **THEN** the SDK creates a managed child session with its own stable identifier and metadata linking it to the parent session and delegating agent
+## MODIFIED Requirements
 
 ### Requirement: Managed sessions can branch from prior conversation state
 The SDK SHALL allow callers to fork a managed session from an existing session so exploratory follow-up work can continue on an independent branch, while preserving parent-child delegation metadata and any stored compaction state on the new branch.
@@ -48,14 +33,3 @@ The SDK SHALL persist managed session state through a storage interface so calle
 #### Scenario: Caller reloads a compacted session
 - **WHEN** a caller loads a previously saved managed session that contains compaction metadata
 - **THEN** the SDK restores both the remaining raw transcript and the persisted compaction metadata so later runs resume from the compacted state
-
-### Requirement: Managed sessions persist pending approval state
-The SDK SHALL persist pending approval metadata through the managed session storage boundary so approval requests survive session reload.
-
-#### Scenario: Session store saves paused approval metadata
-- **WHEN** a managed session pauses because a permission decision returned `ask`
-- **THEN** the SDK saves the session with its pending approval metadata through the configured session store
-
-#### Scenario: Approval resolution updates stored session state
-- **WHEN** a caller approves or denies the pending request on a managed session
-- **THEN** the SDK saves the updated session state with the pending approval metadata cleared or replaced by the resumed transcript state
