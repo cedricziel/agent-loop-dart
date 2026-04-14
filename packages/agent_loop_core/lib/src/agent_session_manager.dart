@@ -603,6 +603,34 @@ class ManagedAgentSession {
         runId: runId,
         agentId: agentId,
       ),
+      AgentProviderRetryEvent(
+        attempt: final attempt,
+        maxAttempts: final maxAttempts,
+        delay: final delay,
+        failure: final failure,
+      ) =>
+        AgentProviderRetryEvent(
+          attempt: attempt,
+          maxAttempts: maxAttempts,
+          delay: delay,
+          failure: failure,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
+      AgentProviderRetryExhaustedEvent(
+        attempt: final attempt,
+        maxAttempts: final maxAttempts,
+        failure: final failure,
+      ) =>
+        AgentProviderRetryExhaustedEvent(
+          attempt: attempt,
+          maxAttempts: maxAttempts,
+          failure: failure,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
       AgentPermissionEvent(decision: final decision) => AgentPermissionEvent(
         decision: decision,
         sessionId: sessionId,

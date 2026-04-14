@@ -10,6 +10,7 @@ class AgentLoopSdk {
     AgentSessionStore? store,
     String? systemPrompt,
     int maxSteps = 8,
+    AgentReliabilityPolicy? reliabilityPolicy,
     String Function()? sessionIdGenerator,
     String Function()? runIdGenerator,
   }) : assert(
@@ -22,6 +23,7 @@ class AgentLoopSdk {
          tools: tools,
          systemPrompt: systemPrompt,
          maxSteps: maxSteps,
+         reliabilityPolicy: reliabilityPolicy,
        ),
        _runtime = AgentRuntime(
          provider: provider,
@@ -32,6 +34,7 @@ class AgentLoopSdk {
          store: store,
          systemPrompt: systemPrompt,
          maxSteps: maxSteps,
+         reliabilityPolicy: reliabilityPolicy,
          sessionIdGenerator: sessionIdGenerator,
          runIdGenerator: runIdGenerator,
        );

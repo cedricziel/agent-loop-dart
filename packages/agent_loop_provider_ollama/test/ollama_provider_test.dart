@@ -273,11 +273,49 @@ void main() {
             ),
           ),
           throwsA(
-            isA<AgentProviderException>().having(
-              (error) => error.provider,
-              'provider',
-              'OllamaProvider',
+            isA<AgentProviderException>()
+                .having((error) => error.provider, 'provider', 'OllamaProvider')
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  AgentProviderFailureKind.invalidRequest,
+                )
+                .having((error) => error.isRetryable, 'isRetryable', isFalse),
+          ),
+        );
+
+        final rateLimitedServer = await _FakeOllamaServer.start((
+          request,
+        ) async {
+          await request.readJson();
+          request.replyJson(<String, Object?>{
+            'error': 'too many requests',
+          }, statusCode: 429);
+        });
+        addTearDown(rateLimitedServer.close);
+
+        final rateLimitedProvider = OllamaProvider(
+          model: 'llama3.2',
+          baseUri: rateLimitedServer.baseUri,
+        );
+
+        await expectLater(
+          rateLimitedProvider.respond(
+            const AgentTurn(
+              messages: <AgentMessage>[
+                AgentMessage(role: AgentRole.user, content: 'hello'),
+              ],
+              tools: <ToolDefinition>[],
             ),
+          ),
+          throwsA(
+            isA<AgentProviderException>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  AgentProviderFailureKind.rateLimited,
+                )
+                .having((error) => error.isRetryable, 'isRetryable', isTrue),
           ),
         );
 
@@ -305,7 +343,15 @@ void main() {
                 ),
               )
               .drain<void>(),
-          throwsA(isA<AgentProviderException>()),
+          throwsA(
+            isA<AgentProviderException>()
+                .having(
+                  (error) => error.kind,
+                  'kind',
+                  AgentProviderFailureKind.protocol,
+                )
+                .having((error) => error.isRetryable, 'isRetryable', isFalse),
+          ),
         );
       },
     );

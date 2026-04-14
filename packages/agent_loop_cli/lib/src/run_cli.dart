@@ -90,6 +90,7 @@ AgentLoopSdk createDemoSdk() {
     model: const DemoModel(),
     tools: <AgentTool>[ClockTool()],
     systemPrompt: 'You are a compact coding agent.',
+    reliabilityPolicy: AgentReliabilityPolicy.standard(),
     profiles: const <AgentProfile>[
       AgentProfile(
         id: 'primary',
@@ -198,6 +199,23 @@ Future<void> _consumeEvents(
         onComplete(completedResult);
       case AgentRunCancelledEvent():
         stderr.writeln('run:cancelled');
+      case AgentProviderRetryEvent(
+        attempt: final attempt,
+        maxAttempts: final maxAttempts,
+        delay: final delay,
+        failure: final failure,
+      ):
+        stderr.writeln(
+          'provider:retry $attempt/$maxAttempts ${failure.provider} ${failure.kind.name} ${delay.inMilliseconds}ms',
+        );
+      case AgentProviderRetryExhaustedEvent(
+        attempt: final attempt,
+        maxAttempts: final maxAttempts,
+        failure: final failure,
+      ):
+        stderr.writeln(
+          'provider:exhausted $attempt/$maxAttempts ${failure.provider} ${failure.kind.name}',
+        );
       case AgentAssistantEvent():
         // Keep normal assistant text on stdout via the final result only.
         break;

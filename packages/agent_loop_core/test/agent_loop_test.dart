@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:agent_loop_core/agent_loop_core.dart';
 import 'package:test/test.dart';
 
@@ -41,6 +43,113 @@ void main() {
             isA<StateError>(),
           ),
         ),
+      );
+    });
+
+    test(
+      'preserves one-shot behavior when no reliability policy is set',
+      () async {
+        final provider = _RetrySequenceProvider(<Object>[
+          AgentResponse(text: 'plain reply'),
+        ]);
+        final loop = AgentLoop(provider: provider);
+
+        final result = await loop.run('hello');
+
+        expect(result.output, 'plain reply');
+        expect(provider.callCount, 1);
+      },
+    );
+
+    test(
+      'retries retryable provider failures until a later attempt succeeds',
+      () async {
+        final provider = _RetrySequenceProvider(<Object>[
+          AgentProviderException(
+            provider: 'retry-sequence',
+            cause: const SocketException('temporary outage'),
+            stackTrace: StackTrace.empty,
+            kind: AgentProviderFailureKind.network,
+            isRetryable: true,
+          ),
+          AgentResponse(text: 'recovered'),
+        ]);
+        final loop = AgentLoop(
+          provider: provider,
+          reliabilityPolicy: const AgentReliabilityPolicy(
+            maxAttempts: 2,
+            initialRetryDelay: Duration.zero,
+          ),
+        );
+
+        final events = await loop.stream('hello').toList();
+
+        expect(provider.callCount, 2);
+        expect(events.whereType<AgentProviderRetryEvent>(), hasLength(1));
+        expect(
+          (events.last as AgentRunCompleteEvent).result.output,
+          'recovered',
+        );
+      },
+    );
+
+    test('does not retry non-retryable provider failures', () async {
+      final provider = _RetrySequenceProvider(<Object>[
+        AgentProviderException(
+          provider: 'retry-sequence',
+          cause: StateError('bad request'),
+          stackTrace: StackTrace.empty,
+          kind: AgentProviderFailureKind.invalidRequest,
+          isRetryable: false,
+        ),
+      ]);
+      final loop = AgentLoop(
+        provider: provider,
+        reliabilityPolicy: const AgentReliabilityPolicy(
+          maxAttempts: 3,
+          initialRetryDelay: Duration.zero,
+        ),
+      );
+
+      await expectLater(
+        loop.run('hello'),
+        throwsA(isA<AgentProviderException>()),
+      );
+      expect(provider.callCount, 1);
+    });
+
+    test('emits retry exhaustion before failing the run', () async {
+      final loop = AgentLoop(
+        provider: _RetrySequenceProvider(<Object>[
+          AgentProviderException(
+            provider: 'retry-sequence',
+            cause: const SocketException('temporary outage'),
+            stackTrace: StackTrace.empty,
+            kind: AgentProviderFailureKind.network,
+            isRetryable: true,
+          ),
+          AgentProviderException(
+            provider: 'retry-sequence',
+            cause: const SocketException('still down'),
+            stackTrace: StackTrace.empty,
+            kind: AgentProviderFailureKind.network,
+            isRetryable: true,
+          ),
+        ]),
+        reliabilityPolicy: const AgentReliabilityPolicy(
+          maxAttempts: 2,
+          initialRetryDelay: Duration.zero,
+        ),
+      );
+
+      final events = await loop
+          .stream('hello')
+          .handleError((_) {}, test: (_) => true)
+          .toList();
+      expect(events.whereType<AgentProviderRetryEvent>(), hasLength(1));
+      expect(
+        events.whereType<AgentProviderRetryExhaustedEvent>(),
+        hasLength(1),
       );
     });
 
@@ -140,6 +249,50 @@ void main() {
         'done',
       );
     });
+
+    test(
+      'retries failed streaming attempts without replaying failed partials',
+      () async {
+        final loop = AgentLoop(
+          provider: _ThrowingStreamingProvider(
+            firstFailure: AgentProviderException(
+              provider: 'streaming-retry',
+              cause: const SocketException('reset'),
+              stackTrace: StackTrace.empty,
+              kind: AgentProviderFailureKind.network,
+              isRetryable: true,
+            ),
+            successEvents: <AgentProviderEvent>[
+              const AgentProviderPartialOutputEvent(
+                part: TextPart(text: 'final '),
+              ),
+              AgentProviderResponseEvent(
+                response: AgentResponse(
+                  parts: <MessagePart>[TextPart(text: 'final answer')],
+                ),
+              ),
+            ],
+          ),
+          reliabilityPolicy: const AgentReliabilityPolicy(
+            maxAttempts: 2,
+            initialRetryDelay: Duration.zero,
+          ),
+        );
+
+        final events = await loop.stream('hello').toList();
+        final textParts = events
+            .whereType<AgentMessagePartEvent>()
+            .map((event) => (event.part as TextPart).text)
+            .toList();
+
+        expect(textParts, <String>['final ']);
+        expect(events.whereType<AgentProviderRetryEvent>(), hasLength(1));
+        expect(
+          (events.last as AgentRunCompleteEvent).result.output,
+          'final answer',
+        );
+      },
+    );
 
     test(
       'resumes from prior session while keeping one-shot flow additive',
@@ -308,6 +461,23 @@ class _SequenceProvider implements AgentProvider {
   }
 }
 
+class _RetrySequenceProvider implements AgentProvider {
+  _RetrySequenceProvider(this._results);
+
+  final List<Object> _results;
+  var callCount = 0;
+
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    callCount++;
+    final current = _results[callCount - 1];
+    if (current is AgentResponse) {
+      return current;
+    }
+    throw current as AgentProviderException;
+  }
+}
+
 class _ThrowingProvider implements AgentProvider {
   @override
   Future<AgentResponse> respond(AgentTurn turn) {
@@ -337,6 +507,37 @@ class _StreamingProvider implements AgentStreamingProvider {
           ];
 
     for (final event in events) {
+      yield event;
+    }
+  }
+}
+
+class _ThrowingStreamingProvider implements AgentStreamingProvider {
+  _ThrowingStreamingProvider({
+    required this.firstFailure,
+    required this.successEvents,
+  });
+
+  final AgentProviderException firstFailure;
+  final List<AgentProviderEvent> successEvents;
+  var _attempt = 0;
+
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    throw UnimplementedError('Streaming provider should use streamRespond.');
+  }
+
+  @override
+  Stream<AgentProviderEvent> streamRespond(AgentTurn turn) async* {
+    _attempt++;
+    if (_attempt == 1) {
+      yield const AgentProviderPartialOutputEvent(
+        part: TextPart(text: 'partial '),
+      );
+      throw firstFailure;
+    }
+
+    for (final event in successEvents) {
       yield event;
     }
   }

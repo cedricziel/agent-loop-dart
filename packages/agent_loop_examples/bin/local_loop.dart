@@ -27,6 +27,7 @@ Future<void> main(List<String> args) async {
     provider: provider,
     systemPrompt: systemPrompt,
     tools: createLocalTools(),
+    reliabilityPolicy: AgentReliabilityPolicy.standard(),
   );
 
   var printedText = false;
@@ -57,6 +58,25 @@ Future<void> main(List<String> args) async {
       case AgentApprovalRequiredEvent():
       case AgentApprovalResolvedEvent():
       case AgentDelegationEvent():
+        break;
+      case AgentProviderRetryEvent(
+        attempt: final attempt,
+        maxAttempts: final maxAttempts,
+        delay: final delay,
+        failure: final failure,
+      ):
+        stderr.writeln(
+          'provider:retry $attempt/$maxAttempts ${failure.provider} ${failure.kind.name} ${delay.inMilliseconds}ms',
+        );
+        break;
+      case AgentProviderRetryExhaustedEvent(
+        attempt: final attempt,
+        maxAttempts: final maxAttempts,
+        failure: final failure,
+      ):
+        stderr.writeln(
+          'provider:exhausted $attempt/$maxAttempts ${failure.provider} ${failure.kind.name}',
+        );
         break;
     }
   }

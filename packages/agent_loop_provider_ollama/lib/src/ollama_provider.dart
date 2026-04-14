@@ -45,7 +45,10 @@ class OllamaProvider implements AgentStreamingProvider {
         final payload = body.isEmpty
             ? <String, Object?>{}
             : jsonDecode(body) as Map<String, Object?>;
-        throw _providerError(_errorMessage(payload, response.statusCode));
+        throw _httpError(
+          _errorMessage(payload, response.statusCode),
+          response.statusCode,
+        );
       }
 
       await for (final line
@@ -87,12 +90,16 @@ class OllamaProvider implements AgentStreamingProvider {
         provider: 'OllamaProvider',
         cause: error,
         stackTrace: stackTrace,
+        kind: AgentProviderFailureKind.network,
+        isRetryable: true,
       );
     } on HttpException catch (error, stackTrace) {
       throw AgentProviderException(
         provider: 'OllamaProvider',
         cause: error,
         stackTrace: stackTrace,
+        kind: AgentProviderFailureKind.network,
+        isRetryable: true,
       );
     } finally {
       if (_httpClient == null) {
@@ -121,7 +128,10 @@ class OllamaProvider implements AgentStreamingProvider {
           : jsonDecode(body) as Map<String, Object?>;
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw _providerError(_errorMessage(payload, response.statusCode));
+        throw _httpError(
+          _errorMessage(payload, response.statusCode),
+          response.statusCode,
+        );
       }
 
       return payload;
@@ -132,12 +142,16 @@ class OllamaProvider implements AgentStreamingProvider {
         provider: 'OllamaProvider',
         cause: error,
         stackTrace: stackTrace,
+        kind: AgentProviderFailureKind.network,
+        isRetryable: true,
       );
     } on HttpException catch (error, stackTrace) {
       throw AgentProviderException(
         provider: 'OllamaProvider',
         cause: error,
         stackTrace: stackTrace,
+        kind: AgentProviderFailureKind.network,
+        isRetryable: true,
       );
     } finally {
       if (_httpClient == null) {
@@ -324,7 +338,28 @@ class OllamaProvider implements AgentStreamingProvider {
         provider: 'OllamaProvider',
         cause: StateError(message),
         stackTrace: StackTrace.current,
+        kind: AgentProviderFailureKind.protocol,
       );
+
+  AgentProviderException _httpError(String message, int statusCode) {
+    final isRetryable =
+        statusCode == 408 || statusCode == 429 || statusCode >= 500;
+    final kind = switch (statusCode) {
+      408 => AgentProviderFailureKind.timeout,
+      429 => AgentProviderFailureKind.rateLimited,
+      final code when code >= 500 => AgentProviderFailureKind.unavailable,
+      400 || 404 => AgentProviderFailureKind.invalidRequest,
+      _ => AgentProviderFailureKind.protocol,
+    };
+
+    return AgentProviderException(
+      provider: 'OllamaProvider',
+      cause: StateError(message),
+      stackTrace: StackTrace.current,
+      kind: kind,
+      isRetryable: isRetryable,
+    );
+  }
 
   Map<String, Object?> _decodeStreamPayload(String line) {
     try {
@@ -334,6 +369,7 @@ class OllamaProvider implements AgentStreamingProvider {
         provider: 'OllamaProvider',
         cause: error,
         stackTrace: stackTrace,
+        kind: AgentProviderFailureKind.protocol,
       );
     }
   }

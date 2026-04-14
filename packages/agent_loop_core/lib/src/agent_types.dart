@@ -201,20 +201,85 @@ class AgentSession {
 
 const Object _agentSessionNoValue = Object();
 
+enum AgentProviderFailureKind {
+  unknown,
+  network,
+  timeout,
+  rateLimited,
+  unavailable,
+  invalidRequest,
+  protocol,
+}
+
+class AgentReliabilityPolicy {
+  const AgentReliabilityPolicy({
+    required this.maxAttempts,
+    this.attemptTimeout,
+    this.initialRetryDelay = Duration.zero,
+    this.backoffMultiplier = 1,
+    Duration? maxRetryDelay,
+  }) : assert(maxAttempts >= 1, 'maxAttempts must be at least 1.'),
+       assert(backoffMultiplier >= 1, 'backoffMultiplier must be at least 1.'),
+       maxRetryDelay = maxRetryDelay ?? initialRetryDelay;
+
+  factory AgentReliabilityPolicy.none() =>
+      const AgentReliabilityPolicy(maxAttempts: 1);
+
+  factory AgentReliabilityPolicy.standard() => const AgentReliabilityPolicy(
+    maxAttempts: 3,
+    attemptTimeout: Duration(seconds: 30),
+    initialRetryDelay: Duration(milliseconds: 200),
+    backoffMultiplier: 2,
+    maxRetryDelay: Duration(seconds: 2),
+  );
+
+  final int maxAttempts;
+  final Duration? attemptTimeout;
+  final Duration initialRetryDelay;
+  final double backoffMultiplier;
+  final Duration maxRetryDelay;
+
+  bool get retriesEnabled => maxAttempts > 1;
+
+  Duration delayForRetry(int failedAttempt) {
+    if (!retriesEnabled || initialRetryDelay == Duration.zero) {
+      return Duration.zero;
+    }
+
+    var delayMicros = initialRetryDelay.inMicroseconds.toDouble();
+    for (var attempt = 1; attempt < failedAttempt; attempt++) {
+      delayMicros *= backoffMultiplier;
+    }
+
+    final boundedMicros = delayMicros.clamp(
+      0,
+      maxRetryDelay.inMicroseconds.toDouble(),
+    );
+    return Duration(microseconds: boundedMicros.round());
+  }
+}
+
 class AgentProviderException implements Exception {
   const AgentProviderException({
     required this.provider,
     required this.cause,
     required this.stackTrace,
+    this.kind = AgentProviderFailureKind.unknown,
+    this.isRetryable = false,
+    this.retryAfter,
   });
 
   final String provider;
   final Object cause;
   final StackTrace stackTrace;
+  final AgentProviderFailureKind kind;
+  final bool isRetryable;
+  final Duration? retryAfter;
 
   @override
   String toString() =>
-      'AgentProviderException(provider: $provider, cause: $cause)';
+      'AgentProviderException(provider: $provider, cause: $cause, '
+      'kind: $kind, retryable: $isRetryable)';
 }
 
 sealed class AgentRunEvent {
@@ -296,6 +361,38 @@ class AgentRunCancelledEvent extends AgentRunEvent {
     required super.runId,
     super.agentId,
   });
+}
+
+class AgentProviderRetryEvent extends AgentRunEvent {
+  const AgentProviderRetryEvent({
+    required this.attempt,
+    required this.maxAttempts,
+    required this.delay,
+    required this.failure,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final int attempt;
+  final int maxAttempts;
+  final Duration delay;
+  final AgentProviderException failure;
+}
+
+class AgentProviderRetryExhaustedEvent extends AgentRunEvent {
+  const AgentProviderRetryExhaustedEvent({
+    required this.attempt,
+    required this.maxAttempts,
+    required this.failure,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final int attempt;
+  final int maxAttempts;
+  final AgentProviderException failure;
 }
 
 class AgentPermissionEvent extends AgentRunEvent {

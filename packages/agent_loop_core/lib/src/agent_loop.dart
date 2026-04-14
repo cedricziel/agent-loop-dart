@@ -17,18 +17,21 @@ class AgentLoop {
     this.systemPrompt,
     this.maxSteps = 8,
     this.toolPermissionCheck,
+    AgentReliabilityPolicy? reliabilityPolicy,
   }) : assert(
          provider != null || model != null,
          'Provide either an AgentProvider or an AgentModel.',
        ),
        _provider = provider ?? model!,
-       _tools = ToolRegistry(tools);
+       _tools = ToolRegistry(tools),
+       reliabilityPolicy = reliabilityPolicy ?? AgentReliabilityPolicy.none();
 
   final AgentProvider _provider;
   final ToolRegistry _tools;
   final String? systemPrompt;
   final int maxSteps;
   final ToolPermissionCheck? toolPermissionCheck;
+  final AgentReliabilityPolicy reliabilityPolicy;
 
   Future<AgentRunResult> run(
     String prompt, {
@@ -132,6 +135,28 @@ class AgentLoop {
             );
           case _ProviderFinalResponseEvent(response: final finalResponse):
             response = finalResponse;
+          case _ProviderRetryLoopEvent(
+            attempt: final attempt,
+            maxAttempts: final maxAttempts,
+            delay: final delay,
+            failure: final failure,
+          ):
+            yield AgentProviderRetryEvent(
+              attempt: attempt,
+              maxAttempts: maxAttempts,
+              delay: delay,
+              failure: failure,
+            );
+          case _ProviderRetryExhaustedLoopEvent(
+            attempt: final attempt,
+            maxAttempts: final maxAttempts,
+            failure: final failure,
+          ):
+            yield AgentProviderRetryExhaustedEvent(
+              attempt: attempt,
+              maxAttempts: maxAttempts,
+              failure: failure,
+            );
         }
       }
 
@@ -290,42 +315,157 @@ class AgentLoop {
       tools: _tools.definitions,
     );
 
-    try {
-      final provider = _provider;
-      if (provider is AgentStreamingProvider) {
-        final iterator = StreamIterator<AgentProviderEvent>(
-          provider.streamRespond(turn),
+    for (var attempt = 1; attempt <= reliabilityPolicy.maxAttempts; attempt++) {
+      _throwIfCancelled(runController);
+
+      try {
+        final attemptResult = await _executeProviderAttempt(
+          turn,
+          runController: runController,
         );
-        try {
-          while (await _withCancellation(iterator.moveNext(), runController)) {
-            final event = iterator.current;
-            switch (event) {
-              case AgentProviderPartialOutputEvent(part: final part):
-                yield _ProviderPartialResponseEvent(part);
-              case AgentProviderResponseEvent(response: final response):
-                yield _ProviderFinalResponseEvent(response);
-            }
-          }
-        } finally {
-          await iterator.cancel();
+        for (final part in attemptResult.streamedParts) {
+          yield _ProviderPartialResponseEvent(part);
         }
+        yield _ProviderFinalResponseEvent(attemptResult.response);
         return;
+      } on AgentProviderException catch (error) {
+        final canRetry = _canRetry(error, attempt);
+        if (!canRetry) {
+          if (error.isRetryable && reliabilityPolicy.retriesEnabled) {
+            yield _ProviderRetryExhaustedLoopEvent(
+              attempt: attempt,
+              maxAttempts: reliabilityPolicy.maxAttempts,
+              failure: error,
+            );
+          }
+          rethrow;
+        }
+
+        final delay =
+            error.retryAfter ?? reliabilityPolicy.delayForRetry(attempt);
+        yield _ProviderRetryLoopEvent(
+          attempt: attempt,
+          maxAttempts: reliabilityPolicy.maxAttempts,
+          delay: delay,
+          failure: error,
+        );
+        await _delayWithCancellation(delay, runController);
+      } on AgentRunCancelledException {
+        rethrow;
+      } catch (error, stackTrace) {
+        throw AgentProviderException(
+          provider: _provider.runtimeType.toString(),
+          cause: error,
+          stackTrace: stackTrace,
+        );
+      }
+    }
+  }
+
+  bool _canRetry(AgentProviderException error, int attempt) {
+    return error.isRetryable && attempt < reliabilityPolicy.maxAttempts;
+  }
+
+  Future<_ProviderAttemptResult> _executeProviderAttempt(
+    AgentTurn turn, {
+    required AgentRunController? runController,
+  }) async {
+    final provider = _provider;
+    final providerName = provider.runtimeType.toString();
+
+    if (provider is AgentStreamingProvider) {
+      final streamedParts = <MessagePart>[];
+      AgentResponse? response;
+      final deadline = _attemptDeadline();
+      final iterator = StreamIterator<AgentProviderEvent>(
+        provider.streamRespond(turn),
+      );
+      try {
+        while (await _withAttemptDeadline(
+          iterator.moveNext(),
+          runController,
+          deadline,
+          providerName: providerName,
+        )) {
+          final event = iterator.current;
+          switch (event) {
+            case AgentProviderPartialOutputEvent(part: final part):
+              streamedParts.add(part);
+            case AgentProviderResponseEvent(response: final finalResponse):
+              response = finalResponse;
+          }
+        }
+      } finally {
+        await iterator.cancel();
       }
 
-      final response = await _withCancellation(
-        provider.respond(turn),
-        runController,
+      final finalResponse = response;
+      if (finalResponse == null) {
+        throw AgentProviderException(
+          provider: providerName,
+          cause: StateError('Provider completed without a final response.'),
+          stackTrace: StackTrace.current,
+          kind: AgentProviderFailureKind.protocol,
+        );
+      }
+
+      return _ProviderAttemptResult(
+        streamedParts: List<MessagePart>.unmodifiable(streamedParts),
+        response: finalResponse,
       );
-      yield _ProviderFinalResponseEvent(response);
-    } on AgentProviderException {
-      rethrow;
-    } on AgentRunCancelledException {
-      rethrow;
-    } catch (error, stackTrace) {
+    }
+
+    final response = await _withAttemptDeadline(
+      provider.respond(turn),
+      runController,
+      _attemptDeadline(),
+      providerName: providerName,
+    );
+    return _ProviderAttemptResult(
+      streamedParts: const <MessagePart>[],
+      response: response,
+    );
+  }
+
+  DateTime? _attemptDeadline() {
+    final timeout = reliabilityPolicy.attemptTimeout;
+    if (timeout == null) {
+      return null;
+    }
+    return DateTime.now().add(timeout);
+  }
+
+  Future<T> _withAttemptDeadline<T>(
+    Future<T> future,
+    AgentRunController? runController,
+    DateTime? deadline, {
+    required String providerName,
+  }) async {
+    final controlled = _withCancellation(future, runController);
+    if (deadline == null) {
+      return controlled;
+    }
+
+    final remaining = deadline.difference(DateTime.now());
+    if (remaining <= Duration.zero) {
       throw AgentProviderException(
-        provider: _provider.runtimeType.toString(),
+        provider: providerName,
+        cause: TimeoutException('Provider attempt timed out.'),
+        stackTrace: StackTrace.current,
+        kind: AgentProviderFailureKind.timeout,
+        isRetryable: true,
+      );
+    }
+
+    try {
+      return await controlled.timeout(remaining);
+    } on TimeoutException catch (error, stackTrace) {
+      throw AgentProviderException(
+        provider: providerName,
         cause: error,
         stackTrace: stackTrace,
+        kind: AgentProviderFailureKind.timeout,
+        isRetryable: true,
       );
     }
   }
@@ -382,6 +522,16 @@ class AgentLoop {
       throw const AgentRunCancelledException();
     }
   }
+
+  Future<void> _delayWithCancellation(
+    Duration delay,
+    AgentRunController? runController,
+  ) async {
+    if (delay <= Duration.zero) {
+      return;
+    }
+    await _withCancellation(Future<void>.delayed(delay), runController);
+  }
 }
 
 sealed class _ProviderLoopEvent {
@@ -397,5 +547,41 @@ class _ProviderPartialResponseEvent extends _ProviderLoopEvent {
 class _ProviderFinalResponseEvent extends _ProviderLoopEvent {
   const _ProviderFinalResponseEvent(this.response);
 
+  final AgentResponse response;
+}
+
+class _ProviderRetryLoopEvent extends _ProviderLoopEvent {
+  const _ProviderRetryLoopEvent({
+    required this.attempt,
+    required this.maxAttempts,
+    required this.delay,
+    required this.failure,
+  });
+
+  final int attempt;
+  final int maxAttempts;
+  final Duration delay;
+  final AgentProviderException failure;
+}
+
+class _ProviderRetryExhaustedLoopEvent extends _ProviderLoopEvent {
+  const _ProviderRetryExhaustedLoopEvent({
+    required this.attempt,
+    required this.maxAttempts,
+    required this.failure,
+  });
+
+  final int attempt;
+  final int maxAttempts;
+  final AgentProviderException failure;
+}
+
+class _ProviderAttemptResult {
+  const _ProviderAttemptResult({
+    required this.streamedParts,
+    required this.response,
+  });
+
+  final List<MessagePart> streamedParts;
   final AgentResponse response;
 }

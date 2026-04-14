@@ -1,10 +1,39 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:agent_loop/agent_loop.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('AgentLoopSdk managed sessions', () {
+    test('applies reliability policy to managed session runs', () async {
+      final sdk = AgentLoopSdk(
+        provider: _RetrySequenceProvider(<Object>[
+          AgentProviderException(
+            provider: 'sdk-retry',
+            cause: const SocketException('temporary outage'),
+            stackTrace: StackTrace.empty,
+            kind: AgentProviderFailureKind.network,
+            isRetryable: true,
+          ),
+          AgentResponse(text: 'recovered'),
+        ]),
+        reliabilityPolicy: const AgentReliabilityPolicy(
+          maxAttempts: 2,
+          initialRetryDelay: Duration.zero,
+        ),
+        store: InMemoryAgentSessionStore(),
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await sdk.createSession();
+      final events = await session.stream('hello').toList();
+
+      expect(events.whereType<AgentProviderRetryEvent>(), hasLength(1));
+      expect((events.last as AgentRunCompleteEvent).result.output, 'recovered');
+    });
+
     test('creates, reloads, and branches managed sessions', () async {
       final sdk = AgentLoopSdk(
         model: const LoopbackModel(),
@@ -194,5 +223,21 @@ class _ToolThenAnswerProvider implements AgentProvider {
     return AgentResponse(
       toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
     );
+  }
+}
+
+class _RetrySequenceProvider implements AgentProvider {
+  _RetrySequenceProvider(this._results);
+
+  final List<Object> _results;
+  var _index = 0;
+
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final current = _results[_index++];
+    if (current is AgentResponse) {
+      return current;
+    }
+    throw current as AgentProviderException;
   }
 }

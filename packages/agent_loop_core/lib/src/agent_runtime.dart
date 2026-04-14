@@ -62,6 +62,7 @@ class AgentRuntime {
     AgentSessionStore? store,
     String? systemPrompt,
     int maxSteps = 8,
+    AgentReliabilityPolicy? reliabilityPolicy,
     String Function()? sessionIdGenerator,
     String Function()? runIdGenerator,
   }) : assert(
@@ -72,6 +73,8 @@ class AgentRuntime {
        _tools = List<AgentTool>.unmodifiable(tools),
        _defaultSystemPrompt = systemPrompt,
        _defaultMaxSteps = maxSteps,
+       _defaultReliabilityPolicy =
+           reliabilityPolicy ?? AgentReliabilityPolicy.none(),
        _profiles = <String, AgentProfile>{
          for (final profile in profiles) profile.id: profile,
        },
@@ -93,6 +96,7 @@ class AgentRuntime {
   final List<AgentTool> _tools;
   final String? _defaultSystemPrompt;
   final int _defaultMaxSteps;
+  final AgentReliabilityPolicy _defaultReliabilityPolicy;
   final Map<String, AgentProfile> _profiles;
   final List<AgentRuntimeHook> _hooks;
   final AgentSessionStore _store;
@@ -122,6 +126,7 @@ class AgentRuntime {
       tools: _tools,
       systemPrompt: profile?.systemPrompt ?? _defaultSystemPrompt,
       maxSteps: profile?.maxSteps ?? _defaultMaxSteps,
+      reliabilityPolicy: _defaultReliabilityPolicy,
       toolPermissionCheck: profile?.permissionPolicy == null
           ? null
           : (toolCall) async {
