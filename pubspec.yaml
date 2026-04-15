@@ -8,6 +8,7 @@ workspace:
   - packages/agent_loop_core
   - packages/agent_loop
   - packages/agent_loop_cli
+  - packages/agent_loop_provider_anthropic
   - packages/agent_loop_provider_ollama
   - packages/agent_loop_examples
 

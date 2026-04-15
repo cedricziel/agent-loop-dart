@@ -11,6 +11,8 @@ resolution: workspace
 dependencies:
   agent_loop:
     path: ../agent_loop
+  agent_loop_provider_anthropic:
+    path: ../agent_loop_provider_anthropic
   agent_loop_provider_ollama:
     path: ../agent_loop_provider_ollama
 
