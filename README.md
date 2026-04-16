@@ -1,6 +1,6 @@
 # agent-loop-dart
 
-A small Dart monorepo for building agent loops in the style of the `opencode` SDK: a model adapter, a tool registry, and an orchestrator that keeps stepping until the model returns a final answer.
+A small Dart monorepo for building agent loops in the style of the `opencode` SDK: a model adapter, a tool registry, builtin coding-agent tools, and an orchestrator that keeps stepping until the model returns a final answer.
 
 ## Workspace layout
 
@@ -17,6 +17,8 @@ A small Dart monorepo for building agent loops in the style of the `opencode` SD
 dart pub get
 dart run packages/agent_loop_cli/bin/agent_loop.dart "what time is it?"
 ```
+
+To use the builtin coding-agent tools, pass `builtinToolOptions: BuiltinToolOptions(workspaceRoot: Directory.current)` when constructing `AgentLoopSdk`, or call `createBuiltinTools(...)` directly and pass the returned tools into a loop.
 
 To use a real provider, add an optional provider package such as `agent_loop_provider_anthropic` or `agent_loop_provider_ollama` rather than expecting `agent_loop` or `agent_loop_core` to carry provider-specific transport code.
 
@@ -39,7 +41,8 @@ The initial scaffold keeps the responsibilities narrow:
 - `AgentModel` describes a model backend that can either answer directly or request tool calls.
 - `AgentStreamingProvider` adds optional provider-side streaming without breaking non-streaming providers.
 - `AgentTool` describes a callable tool with a JSON-like input schema and string output.
+- `createBuiltinTools(...)` packages a first-party `read`, `glob`, `search`, `edit`, `apply_patch`, `bash`, and `webfetch` tool set behind that same surface.
 - `AgentLoop` owns the transcript, executes tool calls, and stops when the model emits a final response.
 - `AgentLoopSdk` is the package-level entry point for consumers.
 
-This is intentionally small, so the next iteration can add real provider adapters, streaming, retries, richer content parts, and persistent conversation state without undoing the basic package shape.
+The runtime now includes provider adapters, retries, rich message parts, managed sessions, and a builtin tool pack while keeping the package shape small and additive.

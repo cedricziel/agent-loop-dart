@@ -37,9 +37,9 @@ void main() {
     test('renders reasoning, file, and tool parts for stderr logs', () {
       expect(
         formatPartForLog(
-          const ReasoningPart(text: 'Need the clock tool first.'),
+          const ReasoningPart(text: 'Need the bash tool first.'),
         ),
-        'assistant:reasoning Need the clock tool first.',
+        'assistant:reasoning Need the bash tool first.',
       );
       expect(
         formatPartForLog(
@@ -50,23 +50,23 @@ void main() {
       expect(
         formatPartForLog(
           const ToolPart(
-            callId: 'clock-1',
-            name: 'clock',
+            callId: 'bash-1',
+            name: 'bash',
             state: ToolPartState.pending,
           ),
         ),
-        'tool:pending clock',
+        'tool:pending bash',
       );
       expect(
         formatPartForLog(
           const ToolPart(
-            callId: 'clock-1',
-            name: 'clock',
+            callId: 'bash-1',
+            name: 'bash',
             state: ToolPartState.completed,
-            output: '2026-04-13T12:00:00Z',
+            output: 'status: success',
           ),
         ),
-        'tool:completed clock => 2026-04-13T12:00:00Z',
+        'tool:completed bash => status: success',
       );
     });
 

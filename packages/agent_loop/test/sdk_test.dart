@@ -168,6 +168,26 @@ void main() {
   });
 
   group('AgentLoopSdk agent runtime', () {
+    test('enables the builtin tool pack through the SDK constructor', () async {
+      final workspace = await Directory.systemTemp.createTemp(
+        'sdk-builtin-tools',
+      );
+      addTearDown(() => workspace.delete(recursive: true));
+      final file = File('${workspace.path}/notes.txt');
+      await file.writeAsString('hello\nworld\n');
+
+      final sdk = AgentLoopSdk(
+        provider: _ReadFileProvider(),
+        builtinToolOptions: BuiltinToolOptions(workspaceRoot: workspace),
+      );
+
+      final result = await sdk.run(prompt: 'read the file');
+
+      expect(result.output, contains('status: success'));
+      expect(result.output, contains('path: notes.txt'));
+      expect(result.output, contains('1: hello'));
+    });
+
     test('exposes configured agent profiles and subagent delegation', () async {
       final sdk = AgentLoopSdk(
         model: const LoopbackModel(),
@@ -292,6 +312,26 @@ class _ToolThenAnswerProvider implements AgentProvider {
 
     return AgentResponse(
       toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+    );
+  }
+}
+
+class _ReadFileProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final last = turn.messages.last;
+    if (last.role == AgentRole.tool) {
+      return AgentResponse(text: last.content);
+    }
+
+    return AgentResponse(
+      toolCalls: const <ToolCall>[
+        ToolCall(
+          id: 'read-1',
+          name: 'read',
+          input: <String, Object?>{'path': 'notes.txt'},
+        ),
+      ],
     );
   }
 }

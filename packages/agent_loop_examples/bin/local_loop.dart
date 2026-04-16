@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:agent_loop/agent_loop.dart';
-import 'package:agent_loop_examples/agent_loop_examples.dart';
 import 'package:agent_loop_provider_ollama/agent_loop_provider_ollama.dart';
 
 Future<void> main(List<String> args) async {
@@ -26,7 +25,7 @@ Future<void> main(List<String> args) async {
   final sdk = AgentLoopSdk(
     provider: provider,
     systemPrompt: systemPrompt,
-    tools: createLocalTools(),
+    builtinToolOptions: BuiltinToolOptions(workspaceRoot: Directory.current),
     reliabilityPolicy: AgentReliabilityPolicy.standard(),
   );
 

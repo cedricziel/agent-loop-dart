@@ -5,6 +5,7 @@ class AgentLoopSdk {
     AgentProvider? provider,
     AgentModel? model,
     Iterable<AgentTool> tools = const <AgentTool>[],
+    BuiltinToolOptions? builtinToolOptions,
     Iterable<AgentProfile> profiles = const <AgentProfile>[],
     Iterable<AgentRuntimeHook> hooks = const <AgentRuntimeHook>[],
     AgentSessionStore? store,
@@ -22,7 +23,7 @@ class AgentLoopSdk {
        _loop = AgentLoop(
          provider: provider,
          model: model,
-         tools: tools,
+         tools: _mergeTools(tools, builtinToolOptions),
          systemPrompt: systemPrompt,
          maxSteps: maxSteps,
          reliabilityPolicy: reliabilityPolicy,
@@ -30,7 +31,7 @@ class AgentLoopSdk {
        _runtime = AgentRuntime(
          provider: provider,
          model: model,
-         tools: tools,
+         tools: _mergeTools(tools, builtinToolOptions),
          profiles: profiles,
          hooks: hooks,
          store: store,
@@ -69,4 +70,14 @@ class AgentLoopSdk {
 
   Future<ManagedAgentSession> loadSession(String id) =>
       _runtime.loadSession(id);
+
+  static List<AgentTool> _mergeTools(
+    Iterable<AgentTool> tools,
+    BuiltinToolOptions? builtinToolOptions,
+  ) {
+    return <AgentTool>[
+      ...tools,
+      if (builtinToolOptions != null) ...createBuiltinTools(builtinToolOptions),
+    ];
+  }
 }

@@ -2,23 +2,6 @@ import 'dart:io';
 
 import 'package:agent_loop/agent_loop.dart';
 
-class ClockTool implements AgentTool {
-  @override
-  ToolDefinition get definition => const ToolDefinition(
-    name: 'clock',
-    description: 'Returns the current local timestamp.',
-    inputSchema: <String, Object?>{
-      'type': 'object',
-      'properties': <String, Object?>{},
-    },
-  );
-
-  @override
-  Future<String> execute(Map<String, Object?> input) async {
-    return DateTime.now().toIso8601String();
-  }
-}
-
 class DemoModel implements AgentModel {
   const DemoModel();
 
@@ -44,12 +27,18 @@ class DemoModel implements AgentModel {
     final prompt = latestUserMessage.content.toLowerCase();
 
     if (prompt.contains('time') &&
-        turn.tools.any((tool) => tool.name == 'clock')) {
+        turn.tools.any((tool) => tool.name == 'bash')) {
       return AgentResponse(
         parts: <MessagePart>[
-          const ReasoningPart(text: 'Need the clock tool first.'),
+          const ReasoningPart(text: 'Need the bash tool first.'),
         ],
-        toolCalls: <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+        toolCalls: <ToolCall>[
+          const ToolCall(
+            id: 'bash-1',
+            name: 'bash',
+            input: <String, Object?>{'command': 'date'},
+          ),
+        ],
       );
     }
 
@@ -88,7 +77,7 @@ String? formatPartForLog(MessagePart part) => switch (part) {
 AgentLoopSdk createDemoSdk() {
   return AgentLoopSdk(
     model: const DemoModel(),
-    tools: <AgentTool>[ClockTool()],
+    builtinToolOptions: BuiltinToolOptions(workspaceRoot: Directory.current),
     systemPrompt: 'You are a compact coding agent.',
     reliabilityPolicy: AgentReliabilityPolicy.standard(),
     profiles: const <AgentProfile>[
@@ -97,7 +86,7 @@ AgentLoopSdk createDemoSdk() {
         systemPrompt: 'You are a compact coding agent.',
         permissionPolicy: DeclarativeAgentPermissionPolicy(
           toolPermissions: <String, AgentPermissionOutcome>{
-            'clock': AgentPermissionOutcome.ask,
+            'bash': AgentPermissionOutcome.ask,
           },
         ),
       ),
