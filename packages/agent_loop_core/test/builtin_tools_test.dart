@@ -36,8 +36,10 @@ void main() {
         'path': '../outside.txt',
       });
 
-      expect(result, contains('status: error'));
-      expect(result, contains('code: workspace_boundary'));
+      expect(result.text, contains('status: error'));
+      expect(result.text, contains('code: workspace_boundary'));
+      expect(result.metadata['status'], 'error');
+      expect(result.metadata['code'], 'workspace_boundary');
     });
   });
 
@@ -56,11 +58,13 @@ void main() {
         'path': 'notes.txt',
       });
 
-      expect(result, contains('status: success'));
-      expect(result, contains('truncated: true'));
-      expect(result, contains('1: alpha'));
-      expect(result, contains('2: beta'));
-      expect(result, isNot(contains('3: gamma')));
+      expect(result.text, contains('status: success'));
+      expect(result.text, contains('truncated: true'));
+      expect(result.text, contains('1: alpha'));
+      expect(result.text, contains('2: beta'));
+      expect(result.text, isNot(contains('3: gamma')));
+      expect(result.metadata['status'], 'success');
+      expect(result.metadata['truncated'], isTrue);
     });
 
     test('finds matches and reports truncation metadata', () async {
@@ -79,9 +83,11 @@ void main() {
         'pattern': 'alpha',
       });
 
-      expect(result, contains('status: success'));
-      expect(result, contains('truncated: true'));
-      expect(result, contains('a.txt:1: alpha'));
+      expect(result.text, contains('status: success'));
+      expect(result.text, contains('truncated: true'));
+      expect(result.text, contains('a.txt:1: alpha'));
+      expect(result.metadata['status'], 'success');
+      expect(result.metadata['truncated'], isTrue);
     });
   });
 
@@ -102,8 +108,9 @@ void main() {
         'new_text': 'dart',
       });
 
-      expect(result, contains('status: success'));
-      expect(result, contains('changed: true'));
+      expect(result.text, contains('status: success'));
+      expect(result.text, contains('changed: true'));
+      expect(result.metadata['changed'], isTrue);
       expect(await file.readAsString(), 'hello dart');
     });
 
@@ -123,8 +130,9 @@ void main() {
         'new_text': 'dart',
       });
 
-      expect(result, contains('status: error'));
-      expect(result, contains('code: no_match'));
+      expect(result.text, contains('status: error'));
+      expect(result.text, contains('code: no_match'));
+      expect(result.metadata['code'], 'no_match');
       expect(await file.readAsString(), 'hello world');
     });
 
@@ -148,8 +156,9 @@ void main() {
 *** End Patch''',
       });
 
-      expect(result, contains('status: success'));
-      expect(result, contains('changed: true'));
+      expect(result.text, contains('status: success'));
+      expect(result.text, contains('changed: true'));
+      expect(result.metadata['changed'], isTrue);
       expect(await file.readAsString(), 'alpha\ngamma\n');
     });
 
@@ -173,8 +182,9 @@ void main() {
 *** End Patch''',
       });
 
-      expect(result, contains('status: error'));
-      expect(result, contains('code: patch_failed'));
+      expect(result.text, contains('status: error'));
+      expect(result.text, contains('code: patch_failed'));
+      expect(result.metadata['code'], 'patch_failed');
       expect(await file.readAsString(), 'alpha\nbeta\n');
     });
   });
@@ -192,9 +202,10 @@ void main() {
         'command': 'printf hello',
       });
 
-      expect(result, contains('status: success'));
-      expect(result, contains('exit_code: 0'));
-      expect(result, contains('stdout:\nhello'));
+      expect(result.text, contains('status: success'));
+      expect(result.text, contains('exit_code: 0'));
+      expect(result.text, contains('stdout:\nhello'));
+      expect(result.metadata['exit_code'], 0);
     });
 
     test('times out a long-running bash command', () async {
@@ -212,8 +223,9 @@ void main() {
         'command': 'sleep 1',
       });
 
-      expect(result, contains('status: error'));
-      expect(result, contains('code: timeout'));
+      expect(result.text, contains('status: error'));
+      expect(result.text, contains('code: timeout'));
+      expect(result.metadata['code'], 'timeout');
     });
 
     test('fetches text content and reports truncation', () async {
@@ -235,9 +247,10 @@ void main() {
         'url': 'http://${server.address.host}:${server.port}/',
       });
 
-      expect(result, contains('status: success'));
-      expect(result, contains('truncated: true'));
-      expect(result, contains('content:\nabcde'));
+      expect(result.text, contains('status: success'));
+      expect(result.text, contains('truncated: true'));
+      expect(result.text, contains('content:\nabcde'));
+      expect(result.metadata['truncated'], isTrue);
     });
 
     test('rejects unsupported content types', () async {
@@ -259,8 +272,33 @@ void main() {
         'url': 'http://${server.address.host}:${server.port}/',
       });
 
-      expect(result, contains('status: error'));
-      expect(result, contains('code: unsupported_content'));
+      expect(result.text, contains('status: error'));
+      expect(result.text, contains('code: unsupported_content'));
+      expect(result.metadata['code'], 'unsupported_content');
     });
+
+    test(
+      'preserves builtin metadata alongside deterministic text output',
+      () async {
+        final workspace = await Directory.systemTemp.createTemp(
+          'builtin-tools',
+        );
+        addTearDown(() => workspace.delete(recursive: true));
+
+        final bashTool = createBuiltinTools(
+          BuiltinToolOptions(workspaceRoot: workspace),
+        ).singleWhere((tool) => tool.definition.name == 'bash');
+
+        final result = await bashTool.execute(<String, Object?>{
+          'command': 'printf hello',
+        });
+
+        expect(result.text, contains('status: success'));
+        expect(result.text, contains('stdout:\nhello'));
+        expect(result.metadata['status'], 'success');
+        expect(result.metadata['exit_code'], 0);
+        expect(result.metadata['tool'], 'bash');
+      },
+    );
   });
 }

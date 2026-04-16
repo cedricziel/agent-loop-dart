@@ -276,25 +276,32 @@ class AgentLoop {
 
     final tool = _tools[toolCall.name];
     final output = tool == null
-        ? 'Tool `${toolCall.name}` is not registered.'
+        ? ToolOutput.text(
+            'Tool `${toolCall.name}` is not registered.',
+            metadata: <String, Object?>{
+              'tool': toolCall.name,
+              'status': 'error',
+              'code': 'not_registered',
+            },
+          )
         : await _withCancellation(tool.execute(toolCall.input), runController);
 
     final toolResult = ToolResult(
       callId: toolCall.id,
       name: toolCall.name,
-      output: output,
+      toolOutput: output,
     );
 
     final toolMessage = AgentMessage(
       role: AgentRole.tool,
-      content: output,
+      content: output.text,
       parts: <MessagePart>[
         ToolPart(
           callId: toolCall.id,
           name: toolCall.name,
           state: ToolPartState.completed,
           input: toolCall.input,
-          output: output,
+          toolOutput: output,
         ),
       ],
       toolResult: toolResult,

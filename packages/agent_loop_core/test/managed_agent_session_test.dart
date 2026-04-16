@@ -82,6 +82,30 @@ void main() {
       ]);
     });
 
+    test(
+      'persists structured tool outputs across managed session reloads',
+      () async {
+        final manager = AgentSessionManager(
+          loop: AgentLoop(
+            provider: _ToolThenAnswerProvider(),
+            tools: <AgentTool>[_ClockTool()],
+          ),
+          store: InMemoryAgentSessionStore(),
+          sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+          runIdGenerator: _IdSequence(<String>['run-1']).next,
+        );
+
+        final session = await manager.createSession();
+        await session.run('time?');
+        final reloaded = await manager.loadSession('session-1');
+        final toolResult = reloaded.transcript[2].toolResult!;
+
+        expect(toolResult.output, '12:00');
+        expect(toolResult.toolOutput.metadata['zone'], 'utc');
+        expect(toolResult.toolOutput.parts.single, isA<FilePart>());
+      },
+    );
+
     test('reports whether a managed session can be compacted', () async {
       final manager = AgentSessionManager(
         loop: AgentLoop(provider: const LoopbackModel()),
@@ -508,6 +532,36 @@ class _SummaryAwareProvider implements AgentProvider {
       text: 'resumed: ${summaries.join(', ')} | $rawContext',
     );
   }
+}
+
+class _ToolThenAnswerProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final last = turn.messages.last;
+    if (last.role == AgentRole.tool) {
+      return AgentResponse(text: 'The time is ${last.content}.');
+    }
+
+    return AgentResponse(
+      toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+    );
+  }
+}
+
+class _ClockTool implements AgentTool {
+  @override
+  ToolDefinition get definition =>
+      const ToolDefinition(name: 'clock', description: 'Returns the time.');
+
+  @override
+  Future<ToolOutput> execute(Map<String, Object?> input) async =>
+      const ToolOutput(
+        text: '12:00',
+        metadata: <String, Object?>{'zone': 'utc'},
+        parts: <MessagePart>[
+          FilePart(path: 'clock.txt', mimeType: 'text/plain'),
+        ],
+      );
 }
 
 class _IdSequence {

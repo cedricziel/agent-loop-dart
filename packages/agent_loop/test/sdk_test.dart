@@ -299,7 +299,8 @@ class _ClockTool implements AgentTool {
       const ToolDefinition(name: 'clock', description: 'Returns the time.');
 
   @override
-  Future<String> execute(Map<String, Object?> input) async => '12:00';
+  Future<ToolOutput> execute(Map<String, Object?> input) async =>
+      const ToolOutput.text('12:00');
 }
 
 class _ToolThenAnswerProvider implements AgentProvider {

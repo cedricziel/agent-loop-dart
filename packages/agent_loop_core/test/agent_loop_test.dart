@@ -28,7 +28,33 @@ void main() {
       expect(result.transcript[0].role, AgentRole.user);
       expect(result.transcript[1].toolCall?.name, 'clock');
       expect(result.transcript[2].toolResult?.output, '2026-04-13T12:00:00Z');
+      expect(
+        result.transcript[2].toolResult?.toolOutput.metadata['zone'],
+        'utc',
+      );
       expect(result.session.transcript, hasLength(result.transcript.length));
+    });
+
+    test('preserves structured tool outputs for custom tools', () async {
+      final loop = AgentLoop(
+        provider: _SequenceProvider(<AgentResponse>[
+          AgentResponse(
+            toolCalls: <ToolCall>[const ToolCall(id: 'clock-1', name: 'clock')],
+          ),
+          AgentResponse(text: 'done'),
+        ]),
+        tools: <AgentTool>[_StructuredClockTool()],
+      );
+
+      final result = await loop.run('time?');
+      final toolResult = result.transcript[2].toolResult!;
+      final toolPart = result.transcript[2].parts.single as ToolPart;
+
+      expect(toolResult.output, '2026-04-13T12:00:00Z');
+      expect(toolResult.toolOutput.metadata['zone'], 'utc');
+      expect(toolResult.toolOutput.parts, hasLength(1));
+      expect(toolResult.toolOutput.parts.single, isA<FilePart>());
+      expect(toolPart.toolOutput?.metadata['zone'], 'utc');
     });
 
     test('wraps provider failures distinctly from tool failures', () async {
@@ -180,6 +206,25 @@ void main() {
         expect(events[7], isA<AgentRunCompleteEvent>());
       },
     );
+
+    test('emits structured tool result events', () async {
+      final loop = AgentLoop(
+        provider: _SequenceProvider(<AgentResponse>[
+          AgentResponse(
+            toolCalls: <ToolCall>[const ToolCall(id: 'clock-1', name: 'clock')],
+          ),
+          AgentResponse(text: 'done'),
+        ]),
+        tools: <AgentTool>[_StructuredClockTool()],
+      );
+
+      final events = await loop.stream('time?').toList();
+      final resultEvent = events.whereType<AgentToolResultEvent>().single;
+
+      expect(resultEvent.result.output, '2026-04-13T12:00:00Z');
+      expect(resultEvent.result.toolOutput.metadata['zone'], 'utc');
+      expect(resultEvent.result.toolOutput.parts.single, isA<FilePart>());
+    });
 
     test('keeps non-streaming providers compatible', () async {
       final loop = AgentLoop(
@@ -431,6 +476,39 @@ void main() {
       expect(partEvents.single.part, isA<TextPart>());
       expect(partEvents.single.part, isNot(isA<FilePart>()));
     });
+
+    test('retains structured tool outputs when resuming a session', () async {
+      final loop = AgentLoop(provider: _SequenceProvider(<AgentResponse>[]));
+      final session = AgentSession(
+        transcript: <AgentMessage>[
+          AgentMessage(
+            role: AgentRole.tool,
+            toolResult: ToolResult(
+              callId: 'clock-1',
+              name: 'clock',
+              toolOutput: ToolOutput(
+                text: '2026-04-13T12:00:00Z',
+                metadata: <String, Object?>{'zone': 'utc'},
+                parts: <MessagePart>[
+                  FilePart(path: 'clock.txt', mimeType: 'text/plain'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+
+      final result = await loop.run('follow up', session: session);
+
+      expect(
+        result.transcript.first.toolResult?.toolOutput.metadata['zone'],
+        'utc',
+      );
+      expect(
+        result.transcript.first.toolResult?.toolOutput.parts,
+        hasLength(1),
+      );
+    });
   });
 }
 
@@ -440,9 +518,27 @@ class _ClockTool implements AgentTool {
       const ToolDefinition(name: 'clock', description: 'Returns a fixed time.');
 
   @override
-  Future<String> execute(Map<String, Object?> input) async {
-    return '2026-04-13T12:00:00Z';
-  }
+  Future<ToolOutput> execute(Map<String, Object?> input) async =>
+      const ToolOutput(
+        text: '2026-04-13T12:00:00Z',
+        metadata: <String, Object?>{'zone': 'utc'},
+      );
+}
+
+class _StructuredClockTool implements AgentTool {
+  @override
+  ToolDefinition get definition =>
+      const ToolDefinition(name: 'clock', description: 'Returns a fixed time.');
+
+  @override
+  Future<ToolOutput> execute(Map<String, Object?> input) async =>
+      const ToolOutput(
+        text: '2026-04-13T12:00:00Z',
+        metadata: <String, Object?>{'zone': 'utc'},
+        parts: <MessagePart>[
+          FilePart(path: 'clock.txt', mimeType: 'text/plain'),
+        ],
+      );
 }
 
 class _SequenceProvider implements AgentProvider {

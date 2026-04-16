@@ -1,4 +1,24 @@
+import 'agent_types.dart';
+
 typedef JsonSchema = Map<String, Object?>;
+
+class ToolOutput {
+  const ToolOutput({
+    required this.text,
+    this.metadata = const <String, Object?>{},
+    this.parts = const <MessagePart>[],
+  });
+
+  const ToolOutput.text(
+    this.text, {
+    this.metadata = const <String, Object?>{},
+    this.parts = const <MessagePart>[],
+  });
+
+  final String text;
+  final Map<String, Object?> metadata;
+  final List<MessagePart> parts;
+}
 
 class ToolDefinition {
   const ToolDefinition({
@@ -15,7 +35,7 @@ class ToolDefinition {
 abstract interface class AgentTool {
   ToolDefinition get definition;
 
-  Future<String> execute(Map<String, Object?> input);
+  Future<ToolOutput> execute(Map<String, Object?> input);
 }
 
 class ToolRegistry {

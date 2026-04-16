@@ -178,7 +178,14 @@ class _BuiltinToolResult {
   final Map<String, Object?> metadata;
   final Map<String, String> sections;
 
-  String toText() {
+  ToolOutput toToolOutput() {
+    return ToolOutput(
+      text: _renderText(),
+      metadata: <String, Object?>{'status': status, ...metadata},
+    );
+  }
+
+  String _renderText() {
     final lines = <String>['status: $status'];
     final keys = metadata.keys.toList()..sort();
     for (final key in keys) {
@@ -206,9 +213,9 @@ abstract class _BuiltinToolBase implements AgentTool {
   String get toolName;
 
   @override
-  Future<String> execute(Map<String, Object?> input) async {
+  Future<ToolOutput> execute(Map<String, Object?> input) async {
     try {
-      return (await executeBuiltin(input)).toText();
+      return (await executeBuiltin(input)).toToolOutput();
     } on _BuiltinToolException catch (error) {
       return _BuiltinToolResult(
         status: 'error',
@@ -217,7 +224,7 @@ abstract class _BuiltinToolBase implements AgentTool {
           'code': error.code,
           'message': error.message,
         },
-      ).toText();
+      ).toToolOutput();
     } on FileSystemException catch (error) {
       return _BuiltinToolResult(
         status: 'error',
@@ -226,7 +233,7 @@ abstract class _BuiltinToolBase implements AgentTool {
           'code': 'file_system',
           'message': error.message,
         },
-      ).toText();
+      ).toToolOutput();
     }
   }
 

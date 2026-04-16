@@ -15,8 +15,8 @@ class ClockTool implements AgentTool {
   );
 
   @override
-  Future<String> execute(Map<String, Object?> input) async {
-    return DateTime.now().toIso8601String();
+  Future<ToolOutput> execute(Map<String, Object?> input) async {
+    return ToolOutput.text(DateTime.now().toIso8601String());
   }
 }
 
@@ -32,8 +32,8 @@ class WorkingDirectoryTool implements AgentTool {
   );
 
   @override
-  Future<String> execute(Map<String, Object?> input) async {
-    return Directory.current.path;
+  Future<ToolOutput> execute(Map<String, Object?> input) async {
+    return ToolOutput.text(Directory.current.path);
   }
 }
 
@@ -55,14 +55,14 @@ class ListFilesTool implements AgentTool {
   );
 
   @override
-  Future<String> execute(Map<String, Object?> input) async {
+  Future<ToolOutput> execute(Map<String, Object?> input) async {
     final relativePath = (input['path'] as String?)?.trim();
     final directory = Directory(
       relativePath == null || relativePath.isEmpty ? '.' : relativePath,
     );
 
     if (!await directory.exists()) {
-      return 'Directory not found: ${directory.path}';
+      return ToolOutput.text('Directory not found: ${directory.path}');
     }
 
     final entries = await directory.list().toList();
@@ -79,7 +79,9 @@ class ListFilesTool implements AgentTool {
         })
         .toList(growable: false);
 
-    return formatted.isEmpty ? '(empty)' : formatted.join('\n');
+    return ToolOutput.text(
+      formatted.isEmpty ? '(empty)' : formatted.join('\n'),
+    );
   }
 }
 
@@ -102,21 +104,21 @@ class ReadFileTool implements AgentTool {
   );
 
   @override
-  Future<String> execute(Map<String, Object?> input) async {
+  Future<ToolOutput> execute(Map<String, Object?> input) async {
     final path = (input['path'] as String?)?.trim();
     if (path == null || path.isEmpty) {
-      return 'Missing required input: path';
+      return const ToolOutput.text('Missing required input: path');
     }
 
     final file = File(path);
     if (!await file.exists()) {
-      return 'File not found: ${file.path}';
+      return ToolOutput.text('File not found: ${file.path}');
     }
 
     try {
-      return await file.readAsString(encoding: utf8);
+      return ToolOutput.text(await file.readAsString(encoding: utf8));
     } on FileSystemException catch (error) {
-      return 'Failed to read file: $error';
+      return ToolOutput.text('Failed to read file: $error');
     }
   }
 }

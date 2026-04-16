@@ -49,7 +49,7 @@ void main() {
       );
       expect(
         formatPartForLog(
-          const ToolPart(
+          ToolPart(
             callId: 'bash-1',
             name: 'bash',
             state: ToolPartState.pending,
@@ -59,7 +59,7 @@ void main() {
       );
       expect(
         formatPartForLog(
-          const ToolPart(
+          ToolPart(
             callId: 'bash-1',
             name: 'bash',
             state: ToolPartState.completed,

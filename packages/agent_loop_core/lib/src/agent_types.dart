@@ -30,19 +30,31 @@ class FilePart extends MessagePart {
 enum ToolPartState { pending, completed }
 
 class ToolPart extends MessagePart {
-  const ToolPart({
+  ToolPart({
     required this.callId,
     required this.name,
     required this.state,
     this.input = const <String, Object?>{},
-    this.output,
-  });
+    String? output,
+    ToolOutput? toolOutput,
+  }) : assert(
+         output != null || toolOutput != null || state == ToolPartState.pending,
+         'Completed tool parts must include output or toolOutput.',
+       ),
+       assert(
+         output == null || toolOutput == null,
+         'Provide either output or toolOutput, not both.',
+       ),
+       toolOutput =
+           toolOutput ?? (output == null ? null : ToolOutput.text(output));
 
   final String callId;
   final String name;
   final ToolPartState state;
   final Map<String, Object?> input;
-  final String? output;
+  final ToolOutput? toolOutput;
+
+  String? get output => toolOutput?.text;
 }
 
 class ToolCall {
@@ -58,15 +70,26 @@ class ToolCall {
 }
 
 class ToolResult {
-  const ToolResult({
+  ToolResult({
     required this.callId,
     required this.name,
-    required this.output,
-  });
+    String? output,
+    ToolOutput? toolOutput,
+  }) : assert(
+         output != null || toolOutput != null,
+         'Provide either output or toolOutput.',
+       ),
+       assert(
+         output == null || toolOutput == null,
+         'Provide either output or toolOutput, not both.',
+       ),
+       toolOutput = toolOutput ?? ToolOutput.text(output!);
 
   final String callId;
   final String name;
-  final String output;
+  final ToolOutput toolOutput;
+
+  String get output => toolOutput.text;
 }
 
 class AgentMessage {

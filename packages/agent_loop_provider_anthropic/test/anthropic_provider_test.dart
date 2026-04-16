@@ -90,7 +90,7 @@ void main() {
       );
 
       await provider.respond(
-        const AgentTurn(
+        AgentTurn(
           messages: <AgentMessage>[
             AgentMessage(
               role: AgentRole.assistant,
