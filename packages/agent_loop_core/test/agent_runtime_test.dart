@@ -139,6 +139,33 @@ void main() {
       expect(reloaded.pendingApproval, isA<AgentToolApprovalRequest>());
     });
 
+    test('pauses ask_user requests on managed sessions', () async {
+      final store = InMemoryAgentSessionStore();
+      final runtime = AgentRuntime(
+        provider: _AskUserProvider(),
+        tools: <AgentTool>[const _ClockTool()],
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession();
+      final events = await session.stream('what should I do?').toList();
+      final reloaded = await runtime.loadSession('session-1');
+
+      expect(events.whereType<AgentQuestionRequiredEvent>(), hasLength(1));
+      expect(events.whereType<AgentToolCallEvent>(), isEmpty);
+      expect(events.whereType<AgentToolResultEvent>(), isEmpty);
+      expect(session.pendingQuestion, isNotNull);
+      expect(session.pendingQuestion!.runId, 'run-1');
+      expect(session.pendingQuestion!.question.header, 'Need direction');
+      expect(
+        session.pendingQuestion!.question.options.single.description,
+        'Proceed with staging only',
+      );
+      expect(reloaded.pendingQuestion, isNotNull);
+    });
+
     test(
       'emits permission events without fabricating tool transcript activity',
       () async {
@@ -424,6 +451,22 @@ void main() {
       expect(session.pendingApproval, isNotNull);
       expect(session.compaction, isNull);
     });
+
+    test('rejects new work while question is pending', () async {
+      final runtime = AgentRuntime(
+        provider: _AskUserProvider(),
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession();
+      await session.stream('what should I do?').drain<void>();
+
+      await expectLater(
+        session.run('another prompt'),
+        throwsA(isA<AgentSessionRunActiveException>()),
+      );
+    });
   });
 
   group('Approval lifecycle events', () {
@@ -495,6 +538,106 @@ void main() {
         (deniedEvents.single as AgentApprovalResolvedEvent).resolution,
         AgentApprovalResolution.denied,
       );
+    });
+  });
+
+  group('Question lifecycle events', () {
+    test('answers a paused ask_user request after reload', () async {
+      final store = InMemoryAgentSessionStore();
+      final runtime = AgentRuntime(
+        provider: _AskUserProvider(),
+        store: store,
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession();
+      await session.stream('what should I do?').drain<void>();
+
+      final reloaded = await runtime.loadSession('session-1');
+      final result = await reloaded.answerPendingQuestion(
+        const AskUserAnswer(
+          selectedOptionIds: <String>['staging'],
+          freeformText: 'Do staging first',
+        ),
+      );
+
+      expect(reloaded.pendingQuestion, isNull);
+      expect(result.output, contains('Using kind: ask_user_answer'));
+      expect(result.transcript.map((message) => message.role), <AgentRole>[
+        AgentRole.user,
+        AgentRole.assistant,
+        AgentRole.tool,
+        AgentRole.assistant,
+      ]);
+      expect(
+        result
+            .transcript[2]
+            .toolResult
+            ?.toolOutput
+            .metadata['selected_option_ids'],
+        <String>['staging'],
+      );
+      expect(
+        result.transcript[2].toolResult?.toolOutput.metadata['freeform_text'],
+        'Do staging first',
+      );
+    });
+
+    test('cancels a paused ask_user request cleanly', () async {
+      final runtime = AgentRuntime(
+        provider: _AskUserProvider(),
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession();
+      await session.stream('what should I do?').drain<void>();
+
+      final cancelledEvents = await session
+          .cancelPendingQuestionStream()
+          .toList();
+
+      expect(session.pendingQuestion, isNull);
+      expect(cancelledEvents, hasLength(2));
+      expect(cancelledEvents.first, isA<AgentQuestionResolvedEvent>());
+      expect(
+        (cancelledEvents.first as AgentQuestionResolvedEvent).resolution,
+        AgentQuestionResolution.cancelled,
+      );
+      expect(cancelledEvents.last, isA<AgentRunCancelledEvent>());
+      expect(session.transcript, isEmpty);
+    });
+
+    test('orders ask_user pause and answer resume events', () async {
+      final runtime = AgentRuntime(
+        provider: _AskUserProvider(),
+        sessionIdGenerator: _IdSequence(<String>['session-1']).next,
+        runIdGenerator: _IdSequence(<String>['run-1']).next,
+      );
+
+      final session = await runtime.createSession();
+      final pausedEvents = await session.stream('what should I do?').toList();
+      final resumedEvents = await session
+          .answerPendingQuestionStream(
+            const AskUserAnswer(selectedOptionIds: <String>['staging']),
+          )
+          .toList();
+
+      expect(pausedEvents.first, isA<AgentRunStartEvent>());
+      expect(pausedEvents[1], isA<AgentQuestionRequiredEvent>());
+      expect(pausedEvents.whereType<AgentToolCallEvent>(), isEmpty);
+
+      expect(resumedEvents.first, isA<AgentQuestionResolvedEvent>());
+      expect(resumedEvents[1], isA<AgentAssistantEvent>());
+      expect(resumedEvents[2], isA<AgentMessagePartEvent>());
+      expect(resumedEvents[3], isA<AgentToolCallEvent>());
+      expect(resumedEvents[4], isA<AgentMessagePartEvent>());
+      expect(resumedEvents[5], isA<AgentToolResultEvent>());
+      expect(resumedEvents.last, isA<AgentRunCompleteEvent>());
+      expect(resumedEvents.map((event) => event.runId).toSet(), <String>{
+        'run-1',
+      });
     });
   });
 
@@ -659,6 +802,36 @@ class _ToolThenAnswerProvider implements AgentProvider {
 
     return AgentResponse(
       toolCalls: const <ToolCall>[ToolCall(id: 'clock-1', name: 'clock')],
+    );
+  }
+}
+
+class _AskUserProvider implements AgentProvider {
+  @override
+  Future<AgentResponse> respond(AgentTurn turn) async {
+    final last = turn.messages.last;
+    if (last.role == AgentRole.tool) {
+      return AgentResponse(text: 'Using ${last.content}.');
+    }
+
+    return AgentResponse(
+      toolCalls: const <ToolCall>[
+        ToolCall(
+          id: 'ask-1',
+          name: 'ask_user',
+          input: <String, Object?>{
+            'header': 'Need direction',
+            'question': 'Which environment should I use?',
+            'options': <Map<String, Object?>>[
+              <String, Object?>{
+                'id': 'staging',
+                'label': 'Staging',
+                'description': 'Proceed with staging only',
+              },
+            ],
+          },
+        ),
+      ],
     );
   }
 }

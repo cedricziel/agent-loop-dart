@@ -14,6 +14,7 @@ void main() {
       );
 
       expect(tools.map((tool) => tool.definition.name), <String>[
+        'ask_user',
         'read',
         'glob',
         'search',
@@ -40,6 +41,59 @@ void main() {
       expect(result.text, contains('code: workspace_boundary'));
       expect(result.metadata['status'], 'error');
       expect(result.metadata['code'], 'workspace_boundary');
+    });
+
+    test('registers ask_user with structured question input schema', () async {
+      final workspace = await Directory.systemTemp.createTemp('builtin-tools');
+      addTearDown(() => workspace.delete(recursive: true));
+
+      final askUserTool = createBuiltinTools(
+        BuiltinToolOptions(workspaceRoot: workspace),
+      ).singleWhere((tool) => tool.definition.name == 'ask_user');
+
+      expect(askUserTool.definition.inputSchema['type'], 'object');
+      final properties =
+          askUserTool.definition.inputSchema['properties'] as Map;
+      expect(
+        properties.keys,
+        containsAll(<String>['header', 'question', 'options', 'multiple']),
+      );
+    });
+
+    test('preserves question and answer model fields', () {
+      const request = AgentPendingQuestionRequest(
+        runId: 'run-1',
+        toolCall: ToolCall(id: 'ask-1', name: 'ask_user'),
+        transcript: <AgentMessage>[
+          AgentMessage(role: AgentRole.user, content: 'hi'),
+        ],
+        step: 2,
+        question: AskUserQuestion(
+          header: 'Need input',
+          question: 'Pick one',
+          options: <AskUserOption>[
+            AskUserOption(
+              id: 'a',
+              label: 'Option A',
+              description: 'First option',
+            ),
+          ],
+        ),
+      );
+      const answer = AskUserAnswer(
+        selectedOptionIds: <String>['a'],
+        freeformText: 'plus more context',
+      );
+
+      expect(request.question.header, 'Need input');
+      expect(request.question.options.single.description, 'First option');
+      expect(answer.toToolOutput().metadata['selected_option_ids'], <String>[
+        'a',
+      ]);
+      expect(
+        answer.toToolOutput().metadata['freeform_text'],
+        'plus more context',
+      );
     });
   });
 

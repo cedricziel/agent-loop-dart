@@ -69,6 +69,91 @@ class ToolCall {
   final Map<String, Object?> input;
 }
 
+class AskUserOption {
+  const AskUserOption({
+    required this.id,
+    required this.label,
+    required this.description,
+  });
+
+  final String id;
+  final String label;
+  final String description;
+}
+
+class AskUserQuestion {
+  const AskUserQuestion({
+    required this.header,
+    required this.question,
+    this.options = const <AskUserOption>[],
+    this.multiple = false,
+  });
+
+  final String header;
+  final String question;
+  final List<AskUserOption> options;
+  final bool multiple;
+}
+
+class AskUserAnswer {
+  const AskUserAnswer({
+    this.selectedOptionIds = const <String>[],
+    this.freeformText,
+  });
+
+  final List<String> selectedOptionIds;
+  final String? freeformText;
+
+  ToolOutput toToolOutput() {
+    final metadata = <String, Object?>{
+      'kind': 'ask_user_answer',
+      'selected_option_ids': selectedOptionIds,
+    };
+    final textLines = <String>[
+      'kind: ask_user_answer',
+      'selected_option_ids: ${selectedOptionIds.join(', ')}',
+    ];
+    final freeformText = this.freeformText;
+    if (freeformText != null && freeformText.isNotEmpty) {
+      metadata['freeform_text'] = freeformText;
+      textLines.add('freeform_text: $freeformText');
+    }
+    return ToolOutput(text: textLines.join('\n'), metadata: metadata);
+  }
+}
+
+class AgentPendingQuestionRequest {
+  const AgentPendingQuestionRequest({
+    required this.runId,
+    required this.toolCall,
+    required this.transcript,
+    required this.step,
+    required this.question,
+  });
+
+  final String runId;
+  final ToolCall toolCall;
+  final List<AgentMessage> transcript;
+  final int step;
+  final AskUserQuestion question;
+
+  AgentPendingQuestionRequest withRunId(String runId) {
+    return AgentPendingQuestionRequest(
+      runId: runId,
+      toolCall: toolCall,
+      transcript: transcript,
+      step: step,
+      question: question,
+    );
+  }
+}
+
+class AgentQuestionRequiredException implements Exception {
+  const AgentQuestionRequiredException(this.request);
+
+  final AgentPendingQuestionRequest request;
+}
+
 class ToolResult {
   ToolResult({
     required this.callId,
@@ -222,6 +307,7 @@ class AgentSession {
     this.profileId,
     this.delegatingAgentId,
     this.pendingApproval,
+    this.pendingQuestion,
     this.compaction,
     this.autoCompactionPolicy,
     required List<AgentMessage> transcript,
@@ -232,6 +318,7 @@ class AgentSession {
   final String? profileId;
   final String? delegatingAgentId;
   final AgentPendingApprovalRequest? pendingApproval;
+  final AgentPendingQuestionRequest? pendingQuestion;
   final AgentSessionCompaction? compaction;
   final AgentAutoCompactionPolicy? autoCompactionPolicy;
   final List<AgentMessage> transcript;
@@ -318,6 +405,7 @@ class AgentSession {
     Object? profileId = _agentSessionNoValue,
     Object? delegatingAgentId = _agentSessionNoValue,
     Object? pendingApproval = _agentSessionNoValue,
+    Object? pendingQuestion = _agentSessionNoValue,
     Object? compaction = _agentSessionNoValue,
     Object? autoCompactionPolicy = _agentSessionNoValue,
     List<AgentMessage>? transcript,
@@ -336,6 +424,9 @@ class AgentSession {
       pendingApproval: identical(pendingApproval, _agentSessionNoValue)
           ? this.pendingApproval
           : pendingApproval as AgentPendingApprovalRequest?,
+      pendingQuestion: identical(pendingQuestion, _agentSessionNoValue)
+          ? this.pendingQuestion
+          : pendingQuestion as AgentPendingQuestionRequest?,
       compaction: identical(compaction, _agentSessionNoValue)
           ? this.compaction
           : compaction as AgentSessionCompaction?,
@@ -566,6 +657,17 @@ class AgentApprovalRequiredEvent extends AgentRunEvent {
   final AgentPendingApprovalRequest request;
 }
 
+class AgentQuestionRequiredEvent extends AgentRunEvent {
+  const AgentQuestionRequiredEvent({
+    required this.request,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentPendingQuestionRequest request;
+}
+
 enum AgentApprovalResolution { approved, denied }
 
 class AgentApprovalResolvedEvent extends AgentRunEvent {
@@ -579,6 +681,23 @@ class AgentApprovalResolvedEvent extends AgentRunEvent {
 
   final AgentPendingApprovalRequest request;
   final AgentApprovalResolution resolution;
+}
+
+enum AgentQuestionResolution { answered, cancelled }
+
+class AgentQuestionResolvedEvent extends AgentRunEvent {
+  const AgentQuestionResolvedEvent({
+    required this.request,
+    required this.resolution,
+    this.answer,
+    super.sessionId,
+    super.runId,
+    super.agentId,
+  });
+
+  final AgentPendingQuestionRequest request;
+  final AgentQuestionResolution resolution;
+  final AskUserAnswer? answer;
 }
 
 class AgentAutoCompactionEvent extends AgentRunEvent {

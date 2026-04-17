@@ -74,4 +74,39 @@ void main() {
       expect(formatPartForLog(const TextPart(text: 'hello')), isNull);
     });
   });
+
+  group('formatQuestionPrompt', () {
+    test('renders question header, prompt, and option descriptions', () {
+      const request = AgentPendingQuestionRequest(
+        runId: 'run-1',
+        toolCall: ToolCall(id: 'ask-1', name: 'ask_user'),
+        transcript: <AgentMessage>[],
+        step: 1,
+        question: AskUserQuestion(
+          header: 'Need direction',
+          question: 'Which environment should I use?',
+          options: <AskUserOption>[
+            AskUserOption(
+              id: 'staging',
+              label: 'Staging',
+              description: 'Proceed with staging only',
+            ),
+          ],
+        ),
+      );
+
+      expect(
+        formatQuestionPrompt(request),
+        contains('question: Need direction'),
+      );
+      expect(
+        formatQuestionPrompt(request),
+        contains('Which environment should I use?'),
+      );
+      expect(
+        formatQuestionPrompt(request),
+        contains('- staging: Staging (Proceed with staging only)'),
+      );
+    });
+  });
 }

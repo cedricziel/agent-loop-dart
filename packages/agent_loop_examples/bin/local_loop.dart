@@ -55,7 +55,9 @@ Future<void> main(List<String> args) async {
       case AgentRunCancelledEvent():
       case AgentPermissionEvent():
       case AgentApprovalRequiredEvent():
+      case AgentQuestionRequiredEvent():
       case AgentApprovalResolvedEvent():
+      case AgentQuestionResolvedEvent():
       case AgentDelegationEvent():
         break;
       case AgentProviderRetryEvent(

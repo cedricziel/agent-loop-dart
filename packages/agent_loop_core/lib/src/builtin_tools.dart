@@ -44,6 +44,7 @@ class BuiltinToolOptions {
 List<AgentTool> createBuiltinTools(BuiltinToolOptions options) {
   final runtime = _BuiltinRuntime(options);
   return <AgentTool>[
+    _AskUserTool(runtime),
     _ReadTool(runtime),
     _GlobTool(runtime),
     _SearchTool(runtime),
@@ -52,6 +53,54 @@ List<AgentTool> createBuiltinTools(BuiltinToolOptions options) {
     _BashTool(runtime),
     _WebfetchTool(runtime),
   ];
+}
+
+class _AskUserTool extends _BuiltinToolBase {
+  _AskUserTool(super.runtime);
+
+  @override
+  String get toolName => 'ask_user';
+
+  @override
+  ToolDefinition get definition => const ToolDefinition(
+    name: 'ask_user',
+    description:
+        'Requests structured human input and must be resolved by a managed session before the run can continue.',
+    inputSchema: <String, Object?>{
+      'type': 'object',
+      'properties': <String, Object?>{
+        'header': <String, Object?>{'type': 'string'},
+        'question': <String, Object?>{'type': 'string'},
+        'multiple': <String, Object?>{'type': 'boolean'},
+        'options': <String, Object?>{
+          'type': 'array',
+          'items': <String, Object?>{
+            'type': 'object',
+            'properties': <String, Object?>{
+              'id': <String, Object?>{'type': 'string'},
+              'label': <String, Object?>{'type': 'string'},
+              'description': <String, Object?>{'type': 'string'},
+            },
+            'required': <String>['id', 'label', 'description'],
+          },
+        },
+      },
+      'required': <String>['header', 'question'],
+    },
+  );
+
+  @override
+  Future<_BuiltinToolResult> executeBuiltin(Map<String, Object?> input) async {
+    return _BuiltinToolResult(
+      status: 'error',
+      metadata: <String, Object?>{
+        'tool': toolName,
+        'code': 'interactive_managed_session_required',
+        'message':
+            '`ask_user` must be resolved through a managed session pause/resume flow.',
+      },
+    );
+  }
 }
 
 class _BuiltinRuntime {

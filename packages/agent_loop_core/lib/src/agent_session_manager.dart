@@ -223,6 +223,8 @@ class ManagedAgentSession {
 
   AgentPendingApprovalRequest? get pendingApproval => _session.pendingApproval;
 
+  AgentPendingQuestionRequest? get pendingQuestion => _session.pendingQuestion;
+
   AgentSessionCompaction? get compaction => _session.compaction;
 
   AgentAutoCompactionPolicy? get autoCompactionPolicy =>
@@ -339,6 +341,9 @@ class ManagedAgentSession {
     } on AgentApprovalRequiredException catch (error) {
       await _pauseForApproval(activeRun, error);
       rethrow;
+    } on AgentQuestionRequiredException catch (error) {
+      await _pauseForQuestion(activeRun, error);
+      rethrow;
     } finally {
       _finishRun(activeRun);
     }
@@ -414,6 +419,15 @@ class ManagedAgentSession {
     } on AgentApprovalRequiredException catch (error) {
       final request = await _pauseForApproval(activeRun, error);
       yield AgentApprovalRequiredEvent(
+        request: request,
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+      return;
+    } on AgentQuestionRequiredException catch (error) {
+      final request = await _pauseForQuestion(activeRun, error);
+      yield AgentQuestionRequiredEvent(
         request: request,
         sessionId: id,
         runId: activeRun.runId,
@@ -619,6 +633,120 @@ class ManagedAgentSession {
     }
   }
 
+  Future<AgentRunResult> answerPendingQuestion(AskUserAnswer answer) async {
+    AgentRunResult? result;
+    await for (final event in answerPendingQuestionStream(answer)) {
+      if (event is AgentRunCompleteEvent) {
+        result = event.result;
+      }
+    }
+
+    if (result == null) {
+      throw StateError('Answered pending question did not complete the run.');
+    }
+
+    return result;
+  }
+
+  Stream<AgentRunEvent> answerPendingQuestionStream(
+    AskUserAnswer answer,
+  ) async* {
+    final request = pendingQuestion;
+    if (request == null) {
+      throw StateError('No pending question request is available.');
+    }
+
+    final activeRun = _resumePendingRun(request.runId);
+    await _clearPendingQuestion();
+
+    try {
+      yield AgentQuestionResolvedEvent(
+        request: request,
+        resolution: AgentQuestionResolution.answered,
+        answer: answer,
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+
+      final loop = _loopFactory(_session);
+      await for (final event in loop.resumeQuestionAnswer(
+        request,
+        answer,
+        runController: activeRun.controller,
+      )) {
+        if (event is AgentRunCompleteEvent) {
+          final managedSession = _session.copyWith(
+            transcript: _session.persistedTranscriptFromMaterialized(
+              event.result.transcript,
+            ),
+          );
+          _session = managedSession;
+          final compactionEvent = await _autoCompactEvent(
+            runId: activeRun.runId,
+            agentId: profileId,
+          );
+          await _store.save(_session);
+          if (compactionEvent != null) {
+            yield compactionEvent;
+          }
+          yield AgentRunCompleteEvent(
+            result: AgentRunResult(
+              output: event.result.output,
+              transcript: event.result.transcript,
+              session: managedSession,
+              steps: event.result.steps,
+            ),
+            sessionId: id,
+            runId: activeRun.runId,
+            agentId: profileId,
+          );
+          continue;
+        }
+
+        yield _annotateEvent(
+          event,
+          sessionId: id,
+          runId: activeRun.runId,
+          agentId: profileId,
+        );
+      }
+    } finally {
+      _finishRun(activeRun);
+    }
+  }
+
+  Future<void> cancelPendingQuestion() async {
+    await cancelPendingQuestionStream().drain<void>();
+  }
+
+  Stream<AgentRunEvent> cancelPendingQuestionStream() async* {
+    final request = pendingQuestion;
+    if (request == null) {
+      throw StateError('No pending question request is available.');
+    }
+
+    final activeRun = _resumePendingRun(request.runId);
+    await _clearPendingQuestion();
+
+    try {
+      yield AgentQuestionResolvedEvent(
+        request: request,
+        resolution: AgentQuestionResolution.cancelled,
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+      yield AgentRunCancelledEvent(
+        sessionId: id,
+        runId: activeRun.runId,
+        agentId: profileId,
+      );
+    } finally {
+      _finishRun(activeRun);
+    }
+  }
+
   Future<List<ManagedAgentSession>> children() async {
     final sessions = await _store.listByParent(id);
     return sessions
@@ -639,7 +767,9 @@ class ManagedAgentSession {
   }
 
   _ActiveManagedRun _beginRun() {
-    if (_activeRun != null || _session.pendingApproval != null) {
+    if (_activeRun != null ||
+        _session.pendingApproval != null ||
+        _session.pendingQuestion != null) {
       throw AgentSessionRunActiveException(id);
     }
 
@@ -760,6 +890,13 @@ class ManagedAgentSession {
           runId: runId,
           agentId: agentId,
         ),
+      AgentQuestionRequiredEvent(request: final request) =>
+        AgentQuestionRequiredEvent(
+          request: request,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
       AgentApprovalResolvedEvent(
         request: final request,
         resolution: final resolution,
@@ -767,6 +904,19 @@ class ManagedAgentSession {
         AgentApprovalResolvedEvent(
           request: request,
           resolution: resolution,
+          sessionId: sessionId,
+          runId: runId,
+          agentId: agentId,
+        ),
+      AgentQuestionResolvedEvent(
+        request: final request,
+        resolution: final resolution,
+        answer: final answer,
+      ) =>
+        AgentQuestionResolvedEvent(
+          request: request,
+          resolution: resolution,
+          answer: answer,
           sessionId: sessionId,
           runId: runId,
           agentId: agentId,
@@ -845,8 +995,23 @@ class ManagedAgentSession {
     return request;
   }
 
+  Future<AgentPendingQuestionRequest> _pauseForQuestion(
+    _ActiveManagedRun activeRun,
+    AgentQuestionRequiredException error,
+  ) async {
+    final request = error.request.withRunId(activeRun.runId);
+    _session = _session.copyWith(pendingQuestion: request);
+    await _store.save(_session);
+    return request;
+  }
+
   Future<void> _clearPendingApproval() async {
     _session = _session.copyWith(pendingApproval: null);
+    await _store.save(_session);
+  }
+
+  Future<void> _clearPendingQuestion() async {
+    _session = _session.copyWith(pendingQuestion: null);
     await _store.save(_session);
   }
 
@@ -927,7 +1092,7 @@ class ManagedAgentSession {
       );
     }
 
-    if (_session.pendingApproval != null) {
+    if (_session.pendingApproval != null || _session.pendingQuestion != null) {
       return null;
     }
 

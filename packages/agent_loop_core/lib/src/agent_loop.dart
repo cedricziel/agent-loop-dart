@@ -109,6 +109,24 @@ class AgentLoop {
     );
   }
 
+  Stream<AgentRunEvent> resumeQuestionAnswer(
+    AgentPendingQuestionRequest request,
+    AskUserAnswer answer, {
+    AgentRunController? runController,
+  }) async* {
+    final workingTranscript = <AgentMessage>[...request.transcript];
+    yield* _emitResolvedAskUserToolCall(
+      workingTranscript,
+      request.toolCall,
+      answer,
+    );
+    yield* _executeLoop(
+      workingTranscript,
+      startStep: request.step + 1,
+      runController: runController,
+    );
+  }
+
   Stream<AgentRunEvent> _executeLoop(
     List<AgentMessage> workingTranscript, {
     required int startStep,
@@ -236,6 +254,19 @@ class AgentLoop {
           }
         }
 
+        final question = _parseAskUserQuestion(toolCall.input);
+        if (toolCall.name == 'ask_user' && question != null) {
+          throw AgentQuestionRequiredException(
+            AgentPendingQuestionRequest(
+              runId: '',
+              toolCall: toolCall,
+              transcript: List<AgentMessage>.unmodifiable(workingTranscript),
+              step: step,
+              question: question,
+            ),
+          );
+        }
+
         yield* _executeToolCall(
           workingTranscript,
           toolCall,
@@ -311,6 +342,99 @@ class AgentLoop {
       yield AgentMessagePartEvent(message: toolMessage, part: part);
     }
     yield AgentToolResultEvent(result: toolResult);
+  }
+
+  Stream<AgentRunEvent> _emitResolvedAskUserToolCall(
+    List<AgentMessage> workingTranscript,
+    ToolCall toolCall,
+    AskUserAnswer answer,
+  ) async* {
+    final assistantMessage = AgentMessage(
+      role: AgentRole.assistant,
+      content: 'Calling tool `${toolCall.name}`',
+      parts: <MessagePart>[
+        ToolPart(
+          callId: toolCall.id,
+          name: toolCall.name,
+          state: ToolPartState.pending,
+          input: toolCall.input,
+        ),
+      ],
+      toolCall: toolCall,
+    );
+    workingTranscript.add(assistantMessage);
+    yield AgentAssistantEvent(message: assistantMessage);
+    for (final part in assistantMessage.parts) {
+      yield AgentMessagePartEvent(message: assistantMessage, part: part);
+    }
+    yield AgentToolCallEvent(call: toolCall);
+
+    final output = answer.toToolOutput();
+    final toolResult = ToolResult(
+      callId: toolCall.id,
+      name: toolCall.name,
+      toolOutput: output,
+    );
+    final toolMessage = AgentMessage(
+      role: AgentRole.tool,
+      content: output.text,
+      parts: <MessagePart>[
+        ToolPart(
+          callId: toolCall.id,
+          name: toolCall.name,
+          state: ToolPartState.completed,
+          input: toolCall.input,
+          toolOutput: output,
+        ),
+      ],
+      toolResult: toolResult,
+    );
+    workingTranscript.add(toolMessage);
+    for (final part in toolMessage.parts) {
+      yield AgentMessagePartEvent(message: toolMessage, part: part);
+    }
+    yield AgentToolResultEvent(result: toolResult);
+  }
+
+  AskUserQuestion? _parseAskUserQuestion(Map<String, Object?> input) {
+    if (input['header'] is! String || input['question'] is! String) {
+      return null;
+    }
+    final header = (input['header'] as String).trim();
+    final question = (input['question'] as String).trim();
+    if (header.isEmpty || question.isEmpty) {
+      return null;
+    }
+    final options = <AskUserOption>[];
+    final rawOptions = input['options'];
+    if (rawOptions is List<Object?>) {
+      for (final rawOption in rawOptions) {
+        if (rawOption is! Map<Object?, Object?>) {
+          return null;
+        }
+        final normalized = <String, Object?>{};
+        rawOption.forEach((key, value) {
+          if (key is String) {
+            normalized[key] = value;
+          }
+        });
+        final id = normalized['id'];
+        final label = normalized['label'];
+        final description = normalized['description'];
+        if (id is! String || label is! String || description is! String) {
+          return null;
+        }
+        options.add(
+          AskUserOption(id: id, label: label, description: description),
+        );
+      }
+    }
+    return AskUserQuestion(
+      header: header,
+      question: question,
+      options: options,
+      multiple: input['multiple'] is bool ? input['multiple'] as bool : false,
+    );
   }
 
   Stream<_ProviderLoopEvent> _respondEvents(

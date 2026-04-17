@@ -42,7 +42,9 @@ Future<void> main() async {
       case AgentProviderRetryExhaustedEvent():
       case AgentPermissionEvent():
       case AgentApprovalRequiredEvent():
+      case AgentQuestionRequiredEvent():
       case AgentApprovalResolvedEvent():
+      case AgentQuestionResolvedEvent():
       case AgentDelegationEvent():
         break;
     }

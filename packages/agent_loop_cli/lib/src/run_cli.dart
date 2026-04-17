@@ -74,6 +74,17 @@ String? formatPartForLog(MessagePart part) => switch (part) {
   TextPart() => null,
 };
 
+String formatQuestionPrompt(AgentPendingQuestionRequest request) {
+  final lines = <String>[
+    'question: ${request.question.header}',
+    request.question.question,
+  ];
+  for (final option in request.question.options) {
+    lines.add('- ${option.id}: ${option.label} (${option.description})');
+  }
+  return lines.join('\n');
+}
+
 AgentLoopSdk createDemoSdk() {
   return AgentLoopSdk(
     model: const DemoModel(),
@@ -126,11 +137,21 @@ Future<int> runCli(List<String> args) async {
     result = completedResult;
   });
 
-  while (session.pendingApproval != null) {
-    final approved = await _resolvePendingApproval(session.pendingApproval!);
-    final resolutionEvents = approved
-        ? session.approvePendingStream()
-        : session.denyPendingStream();
+  while (session.pendingApproval != null || session.pendingQuestion != null) {
+    final resolutionEvents = switch ((
+      session.pendingApproval,
+      session.pendingQuestion,
+    )) {
+      (final approval?, _) =>
+        (await _resolvePendingApproval(approval))
+            ? session.approvePendingStream()
+            : session.denyPendingStream(),
+      (_, final question?) => switch (await _resolvePendingQuestion(question)) {
+        final answer? => session.answerPendingQuestionStream(answer),
+        null => session.cancelPendingQuestionStream(),
+      },
+      _ => const Stream<AgentRunEvent>.empty(),
+    };
     await _consumeEvents(resolutionEvents, session, (completedResult) {
       result = completedResult;
     });
@@ -168,8 +189,12 @@ Future<void> _consumeEvents(
         stderr.writeln(
           'approval:required ${request.decision.kind.name} ${request.decision.subject}',
         );
+      case AgentQuestionRequiredEvent(request: final request):
+        stderr.writeln('question:required ${request.question.header}');
       case AgentApprovalResolvedEvent(resolution: final resolution):
         stderr.writeln('approval:resolved ${resolution.name}');
+      case AgentQuestionResolvedEvent(resolution: final resolution):
+        stderr.writeln('question:resolved ${resolution.name}');
       case AgentMessagePartEvent(part: final part):
         final line = formatPartForLog(part);
         if (line != null && line.isNotEmpty) {
@@ -236,4 +261,40 @@ Future<bool> _resolvePendingApproval(
     return true;
   }
   return response == 'y' || response == 'yes';
+}
+
+Future<AskUserAnswer?> _resolvePendingQuestion(
+  AgentPendingQuestionRequest request,
+) async {
+  stderr.writeln(formatQuestionPrompt(request));
+
+  if (!stdin.hasTerminal) {
+    stderr.writeln('question:auto cancelled');
+    return null;
+  }
+
+  stderr.write('Selected option ids (comma-separated, optional): ');
+  final selectedRaw = stdin.readLineSync()?.trim();
+  if (selectedRaw != null && selectedRaw.toLowerCase() == 'cancel') {
+    return null;
+  }
+
+  stderr.write('Freeform answer (optional, type cancel to cancel): ');
+  final freeform = stdin.readLineSync()?.trim();
+  if (freeform != null && freeform.toLowerCase() == 'cancel') {
+    return null;
+  }
+
+  final selectedOptionIds = selectedRaw == null || selectedRaw.isEmpty
+      ? const <String>[]
+      : selectedRaw
+            .split(',')
+            .map((part) => part.trim())
+            .where((part) => part.isNotEmpty)
+            .toList(growable: false);
+
+  return AskUserAnswer(
+    selectedOptionIds: selectedOptionIds,
+    freeformText: freeform == null || freeform.isEmpty ? null : freeform,
+  );
 }
