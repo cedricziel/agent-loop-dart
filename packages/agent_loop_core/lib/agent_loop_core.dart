@@ -1,4 +1,5 @@
 export 'src/builtin_tools.dart';
+export 'src/agent_skill.dart';
 export 'src/agent_loop.dart';
 export 'src/agent_model.dart';
 export 'src/agent_permissions.dart';

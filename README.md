@@ -20,6 +20,31 @@ dart run packages/agent_loop_cli/bin/agent_loop.dart "what time is it?"
 
 To use the builtin coding-agent tools, pass `builtinToolOptions: BuiltinToolOptions(workspaceRoot: Directory.current)` when constructing `AgentLoopSdk`, or call `createBuiltinTools(...)` directly and pass the returned tools into a loop.
 
+To discover Agent Skills-compatible packages from known local locations, call `discoverAgentSkills()` from the `agent_loop` package and load any selected skill with `loadAgentSkill(...)`:
+
+```dart
+import 'package:agent_loop/agent_loop.dart';
+
+Future<void> main() async {
+  final skills = await discoverAgentSkills();
+  if (skills.isEmpty) {
+    return;
+  }
+
+  final loaded = await loadAgentSkill(skills.first);
+  print('${loaded.name}: ${loaded.instructions}');
+}
+```
+
+The SDK currently scans these locations and returns skill metadata with deterministic precedence:
+
+- project and ancestor directories up to the git root:
+  `.agents/skills`, `.claude/skills`, `.opencode/skills`
+- user directories:
+  `~/.agents/skills`, `~/.claude/skills`, `~/.config/opencode/skills`
+
+This tranche only models and loads skills. It does not automatically activate them inside `AgentLoop` or `AgentRuntime` yet.
+
 To use a real provider, add an optional provider package such as `agent_loop_provider_anthropic` or `agent_loop_provider_ollama` rather than expecting `agent_loop` or `agent_loop_core` to carry provider-specific transport code.
 
 To run the loop locally against Ollama:

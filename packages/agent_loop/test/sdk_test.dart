@@ -5,6 +5,167 @@ import 'package:agent_loop/agent_loop.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('AgentLoopSdk skills', () {
+    test(
+      'discovers skills from SKILL.md metadata and loads full instructions',
+      () async {
+        final workspace = await Directory.systemTemp.createTemp('sdk-skills');
+        addTearDown(() => workspace.delete(recursive: true));
+        final skillDir = Directory(
+          '${workspace.path}/.agents/skills/code-review',
+        );
+        await skillDir.create(recursive: true);
+        await File('${skillDir.path}/SKILL.md').writeAsString('''
+---
+name: code-review
+description: Reviews code changes and calls out risks.
+license: MIT
+compatibility: local-only
+metadata:
+  author: test-suite
+  version: "1.0"
+---
+
+Read the diff and report bugs first.
+''');
+
+        final discovered = await discoverAgentSkills(
+          workingDirectory: workspace,
+          homeDirectory: workspace,
+        );
+        final loaded = await loadAgentSkill(discovered.single);
+
+        expect(discovered, hasLength(1));
+        expect(discovered.single.name, 'code-review');
+        expect(
+          discovered.single.description,
+          'Reviews code changes and calls out risks.',
+        );
+        expect(discovered.single.license, 'MIT');
+        expect(discovered.single.compatibility, 'local-only');
+        expect(discovered.single.metadata, <String, String>{
+          'author': 'test-suite',
+          'version': '1.0',
+        });
+        expect(loaded.instructions, 'Read the diff and report bugs first.');
+        expect(loaded.rootUri, Uri.directory(skillDir.path));
+      },
+    );
+
+    test('skips skill entries missing required metadata', () async {
+      final workspace = await Directory.systemTemp.createTemp('sdk-skills');
+      addTearDown(() => workspace.delete(recursive: true));
+      final invalidDir = Directory('${workspace.path}/.agents/skills/invalid');
+      await invalidDir.create(recursive: true);
+      await File('${invalidDir.path}/SKILL.md').writeAsString('''
+---
+name: invalid
+---
+
+Missing description.
+''');
+
+      final skills = await discoverAgentSkills(
+        workingDirectory: workspace,
+        homeDirectory: workspace,
+      );
+
+      expect(skills, isEmpty);
+    });
+
+    test('discovers skills from known project and user locations', () async {
+      final home = await Directory.systemTemp.createTemp('sdk-skill-home');
+      final repo = await Directory.systemTemp.createTemp('sdk-skill-repo');
+      addTearDown(() => home.delete(recursive: true));
+      addTearDown(() => repo.delete(recursive: true));
+      await Directory('${repo.path}/.git').create();
+      final nested = Directory('${repo.path}/packages/app');
+      await nested.create(recursive: true);
+
+      await _writeSkill(
+        Directory('${repo.path}/.agents/skills/project-standard'),
+        name: 'project-standard',
+      );
+      await _writeSkill(
+        Directory('${repo.path}/.claude/skills/project-claude'),
+        name: 'project-claude',
+      );
+      await _writeSkill(
+        Directory('${repo.path}/.opencode/skills/project-opencode'),
+        name: 'project-opencode',
+      );
+      await _writeSkill(
+        Directory('${home.path}/.agents/skills/user-standard'),
+        name: 'user-standard',
+      );
+      await _writeSkill(
+        Directory('${home.path}/.claude/skills/user-claude'),
+        name: 'user-claude',
+      );
+      await _writeSkill(
+        Directory('${home.path}/.config/opencode/skills/user-opencode'),
+        name: 'user-opencode',
+      );
+
+      final skills = await discoverAgentSkills(
+        workingDirectory: nested,
+        homeDirectory: home,
+      );
+
+      expect(
+        skills.map((skill) => skill.name),
+        containsAll(<String>[
+          'project-standard',
+          'project-claude',
+          'project-opencode',
+          'user-standard',
+          'user-claude',
+          'user-opencode',
+        ]),
+      );
+    });
+
+    test('applies deterministic precedence for duplicate names', () async {
+      final home = await Directory.systemTemp.createTemp('sdk-skill-home');
+      final repo = await Directory.systemTemp.createTemp('sdk-skill-repo');
+      addTearDown(() => home.delete(recursive: true));
+      addTearDown(() => repo.delete(recursive: true));
+      await Directory('${repo.path}/.git').create();
+      final nested = Directory('${repo.path}/packages/app');
+      await nested.create(recursive: true);
+
+      await _writeSkill(
+        Directory('${home.path}/.agents/skills/dup-skill'),
+        name: 'dup-skill',
+        description: 'User-level standard skill.',
+      );
+      await _writeSkill(
+        Directory('${repo.path}/.claude/skills/dup-skill'),
+        name: 'dup-skill',
+        description: 'Project-level Claude skill.',
+      );
+      await _writeSkill(
+        Directory('${repo.path}/.opencode/skills/dup-skill'),
+        name: 'dup-skill',
+        description: 'Project-level OpenCode skill.',
+      );
+
+      final skills = await discoverAgentSkills(
+        workingDirectory: nested,
+        homeDirectory: home,
+      );
+      final duplicate = skills.singleWhere(
+        (skill) => skill.name == 'dup-skill',
+      );
+
+      expect(duplicate.description, 'Project-level Claude skill.');
+      expect(
+        duplicate.sourceUri.path,
+        contains('/.claude/skills/dup-skill/SKILL.md'),
+      );
+    });
+  });
+
   group('AgentLoopSdk managed sessions', () {
     test('applies reliability policy to managed session runs', () async {
       final sdk = AgentLoopSdk(
@@ -273,6 +434,22 @@ void main() {
       },
     );
   });
+}
+
+Future<void> _writeSkill(
+  Directory directory, {
+  required String name,
+  String? description,
+}) async {
+  await directory.create(recursive: true);
+  await File('${directory.path}/SKILL.md').writeAsString('''
+---
+name: $name
+description: ${description ?? 'Description for $name.'}
+---
+
+Instructions for $name.
+''');
 }
 
 class _IdSequence {
