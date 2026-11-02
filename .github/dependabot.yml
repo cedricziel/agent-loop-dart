@@ -5,22 +5,11 @@ updates:
     schedule:
       interval: weekly
 
+  # This is a Dart pub workspace (see the root pubspec.yaml). Dependabot's
+  # pub updater can only run at the workspace root; per-package entries under
+  # packages/ fail with "Only apply dependency_services to the root of the
+  # workspace". The root entry resolves and updates the whole workspace.
   - package-ecosystem: pub
     directory: /
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: pub
-    directory: /packages/agent_loop_core
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: pub
-    directory: /packages/agent_loop
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: pub
-    directory: /packages/agent_loop_cli
     schedule:
       interval: weekly
